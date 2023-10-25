@@ -1,0 +1,5 @@
+
+
+PASS getPhotoSettings() on an 'ended' track should throw "InvalidStateError"
+PASS Check getPhotoSettings()
+

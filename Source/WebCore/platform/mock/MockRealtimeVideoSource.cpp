@@ -33,6 +33,7 @@
 
 #if ENABLE(MEDIA_STREAM)
 #include "CaptureDevice.h"
+#include "FillLightMode.h"
 #include "GraphicsContext.h"
 #include "ImageBuffer.h"
 #include "IntRect.h"
@@ -44,6 +45,7 @@
 #include "RealtimeMediaSourceSettings.h"
 #include "VideoFrame.h"
 #include <math.h>
+#include <wtf/NativePromise.h>
 #include <wtf/UUID.h>
 #include <wtf/text/StringConcatenateNumbers.h>
 
@@ -202,6 +204,27 @@ void MockRealtimeVideoSource::getPhotoCapabilities(PhotoCapabilitiesHandler&& co
     completion({ *m_photoCapabilities });
 }
 
+auto MockRealtimeVideoSource::getPhotoSettings() -> Ref<PhotoSettingsPromise>
+{
+    if (m_photoSettings)
+        return PhotoSettingsPromise::createAndResolve(*m_photoSettings);
+
+    PhotoSettings photoSettings;
+    auto settings = this->settings();
+
+    photoSettings.imageHeight = settings.height();
+    photoSettings.imageWidth = settings.width();
+
+    if (std::get<MockCameraProperties>(m_device.properties).hasTorch) {
+        auto fillLightMode = torch() ? FillLightMode::Flash : FillLightMode::Off;
+        photoSettings.fillLightMode = { fillLightMode };
+    }
+
+    m_photoSettings = WTFMove(photoSettings);
+
+    return PhotoSettingsPromise::createAndResolve(*m_photoSettings);
+}
+
 static bool isZoomSupported(const Vector<VideoPreset>& presets)
 {
     return anyOf(presets, [](auto& preset) {
@@ -300,6 +323,8 @@ void MockRealtimeVideoSource::settingsDidChange(OptionSet<RealtimeMediaSourceSet
         m_statsFontSize = m_baseFontSize * .5;
         m_imageBuffer = nullptr;
     }
+    if (settings.contains(RealtimeMediaSourceSettings::Flag::Torch))
+        m_photoSettings = std::nullopt;
 }
 
 void MockRealtimeVideoSource::startCaptureTimer()

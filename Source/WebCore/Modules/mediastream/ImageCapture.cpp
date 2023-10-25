@@ -63,6 +63,16 @@ void ImageCapture::getPhotoCapabilities(PhotoCapabilitiesPromise&& promise)
     m_track->getPhotoCapabilities(WTFMove(promise));
 }
 
+void ImageCapture::getPhotoSettings(PhotoSettingsPromise&& promise)
+{
+    if (m_track->readyState() == MediaStreamTrack::State::Ended) {
+        promise.reject(Exception { InvalidStateError, "Track has ended"_s });
+        return;
+    }
+
+    m_track->getPhotoSettings(WTFMove(promise));
+}
+
 const char* ImageCapture::activeDOMObjectName() const
 {
     return "ImageCapture";
