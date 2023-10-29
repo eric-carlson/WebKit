@@ -264,10 +264,6 @@ void MediaStreamTrack::stopTrack(StopMode mode)
     m_ended = true;
 
     configureTrackRendering();
-
-    auto pendingActions = std::exchange(m_pendingActionQueue, { });
-    while (!pendingActions.isEmpty())
-        pendingActions.takeFirst()(SerialActionResolution::Cancel);
 }
 
 MediaStreamTrack::TrackSettings MediaStreamTrack::getSettings() const
@@ -320,24 +316,10 @@ MediaStreamTrack::TrackCapabilities MediaStreamTrack::getCapabilities() const
     return result;
 }
 
-void MediaStreamTrack::queueAndProcessSerialAction(Function<Ref<GenericPromise>(SerialActionResolution)>&& action)
+void MediaStreamTrack::queueAndProcessSerialAction(Function<Ref<GenericPromise>()>&& action)
 {
     ASSERT(isMainThread());
-    m_pendingActionQueue.append(WTFMove(action));
-    processNextSerialAction();
-}
-
-void MediaStreamTrack::processNextSerialAction()
-{
-    ASSERT(isMainThread());
-    if (m_currentSerialAction || m_pendingActionQueue.isEmpty())
-        return;
-
-    m_currentSerialAction = { m_pendingActionQueue.takeFirst() };
-    m_currentSerialAction.value()(SerialActionResolution::Run)->whenSettled(RunLoop::main(), [protectedThis = Ref { *this }] {
-        protectedThis->m_currentSerialAction = { };
-        protectedThis->processNextSerialAction();
-    });
+    m_pendingActions = m_pendingActions->isResolved() ? action() : m_pendingActions->whenSettled(RunLoop::main(), WTFMove(action));
 }
 
 auto MediaStreamTrack::takePhoto(PhotoSettings&& settings) -> Ref<TakePhotoPromise>
@@ -345,46 +327,31 @@ auto MediaStreamTrack::takePhoto(PhotoSettings&& settings) -> Ref<TakePhotoPromi
     TakePhotoPromise::Producer producer;
     Ref<TakePhotoPromise> promise = producer;
 
-    queueAndProcessSerialAction([settings = WTFMove(settings), protectedThis = Ref { *this }, producer = WTFMove(producer)](SerialActionResolution resolution) mutable -> Ref<GenericPromise> {
-
-        switch (resolution) {
-        case SerialActionResolution::Run:
+    queueAndProcessSerialAction([settings = WTFMove(settings), protectedThis = Ref { *this }, producer = WTFMove(producer)]() mutable -> Ref<GenericPromise> {
+        // https://w3c.github.io/mediacapture-image/#dom-imagecapture-takephoto
+        // If the readyState of track provided in the constructor is not live, return
+        // a promise rejected with a new DOMException whose name is InvalidStateError,
+        // and abort these steps.
+        if (protectedThis->m_ended || protectedThis->m_readyState != State::Live) {
+            producer.reject(Exception { InvalidStateError, "Track has ended"_s });
+            return GenericPromise::createAndResolve();
+        }
+        return protectedThis->m_private->takePhoto(WTFMove(settings))->whenSettled(RunLoop::main(),
+            [protectedThis = WTFMove(protectedThis), producer = WTFMove(producer)] (auto&& result) mutable {
 
             // https://w3c.github.io/mediacapture-image/#dom-imagecapture-takephoto
-            // If the readyState of track provided in the constructor is not live, return
-            // a promise rejected with a new DOMException whose name is InvalidStateError,
-            // and abort these steps.
-
-            if (protectedThis->m_readyState != State::Live) {
-                producer.reject(Exception { InvalidStateError, "Track has ended"_s });
-                break;
-            }
-
-            return protectedThis->m_private->takePhoto(WTFMove(settings))->whenSettled(RunLoop::main(),
-                [protectedThis = WTFMove(protectedThis), producer = WTFMove(producer)] (auto&& result) mutable {
-
-                // https://w3c.github.io/mediacapture-image/#dom-imagecapture-takephoto
-                // If the operation cannot be completed for any reason (for example, upon
-                // invocation of multiple takePhoto() method calls in rapid succession),
-                // then reject p with a new DOMException whose name is UnknownError, and
-                // abort these steps.
-                if (!result)
-                    producer.reject(Exception { UnknownError, WTFMove(result.error()) });
-                else if (RefPtr context = protectedThis->scriptExecutionContext(); !context || context->activeDOMObjectsAreStopped() || protectedThis->m_ended)
-                    producer.reject(Exception { OperationError, "Track has ended"_s });
-                else
-                    producer.resolve(WTFMove(result.value()));
-
-                return GenericPromise::createAndResolve();
-            });
-            break;
-
-        case SerialActionResolution::Cancel:
-            producer.reject(Exception { UnknownError, "Track has ended"_s });
-            break;
-        }
-
-        return GenericPromise::createAndResolve();
+            // If the operation cannot be completed for any reason (for example, upon
+            // invocation of multiple takePhoto() method calls in rapid succession),
+            // then reject p with a new DOMException whose name is UnknownError, and
+            // abort these steps.
+            if (!result)
+                producer.reject(Exception { UnknownError, WTFMove(result.error()) });
+            else if (RefPtr context = protectedThis->scriptExecutionContext(); !context || context->activeDOMObjectsAreStopped() || protectedThis->m_ended)
+                producer.reject(Exception { OperationError, "Track has ended"_s });
+            else
+                producer.resolve(WTFMove(result.value()));
+            return GenericPromise::createAndResolve();
+        });
     });
 
     return promise;
@@ -443,32 +410,25 @@ static MediaConstraints createMediaConstraints(const std::optional<MediaTrackCon
 
 void MediaStreamTrack::applyConstraints(const std::optional<MediaTrackConstraints>& constraints, DOMPromiseDeferred<void>&& promise)
 {
-    queueAndProcessSerialAction([protectedThis = Ref { *this }, constraints, domPromise = WTFMove(promise)](SerialActionResolution resolution) mutable {
-
+    queueAndProcessSerialAction([protectedThis = Ref { *this }, constraints, domPromise = WTFMove(promise)]() mutable {
+        if (protectedThis->m_ended) {
+            domPromise.reject(Exception { InvalidAccessError, "Track has ended"_s });
+            return GenericPromise::createAndResolve();
+        }
         GenericPromise::Producer producer;
         Ref<GenericPromise> nativePromise = producer;
 
-        switch (resolution) {
-        case SerialActionResolution::Run:
-            protectedThis->m_private->applyConstraints(createMediaConstraints(constraints), [protectedThis = WTFMove(protectedThis), constraints, domPromise = WTFMove(domPromise), producer = WTFMove(producer)](auto&& error) mutable {
-                if (error) {
-                    domPromise.rejectType<IDLInterface<OverconstrainedError>>(OverconstrainedError::create(WTFMove(error->badConstraint), WTFMove(error->message)));
-                    producer.resolve();
-                    return;
-                }
-
-                protectedThis->m_constraints = valueOrDefault(constraints);
-                domPromise.resolve();
+        protectedThis->m_private->applyConstraints(createMediaConstraints(constraints), [protectedThis = WTFMove(protectedThis), constraints, domPromise = WTFMove(domPromise), producer = WTFMove(producer)](auto&& error) mutable {
+            if (error) {
+                domPromise.rejectType<IDLInterface<OverconstrainedError>>(OverconstrainedError::create(WTFMove(error->badConstraint), WTFMove(error->message)));
                 producer.resolve();
-            });
-            break;
+                return;
+            }
 
-        case SerialActionResolution::Cancel:
-            domPromise.reject(Exception { InvalidAccessError, "Track has ended"_s });
+            protectedThis->m_constraints = valueOrDefault(constraints);
+            domPromise.resolve();
             producer.resolve();
-            break;
-        }
-
+        });
         return nativePromise;
     });
 }

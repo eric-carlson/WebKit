@@ -205,13 +205,10 @@ private:
     WTFLogChannel& logChannel() const final;
 #endif
 
-    enum class SerialActionResolution { Run, Cancel };
-    using SerialAction = Function<Ref<GenericPromise>(SerialActionResolution)>;
+    using SerialAction = Function<Ref<GenericPromise>()>;
     void queueAndProcessSerialAction(SerialAction&&);
-    void processNextSerialAction();
+    Ref<GenericPromise> m_pendingActions { GenericPromise::createAndResolve() };
 
-    Deque<SerialAction> m_pendingActionQueue;
-    std::optional<SerialAction> m_currentSerialAction;
     Vector<Observer*> m_observers;
 
     MediaTrackConstraints m_constraints;

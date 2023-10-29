@@ -58,7 +58,7 @@ ImageCapture::~ImageCapture() = default;
 void ImageCapture::takePhoto(PhotoSettings&& settings, DOMPromiseDeferred<IDLInterface<Blob>>&& promise)
 {
     m_track->takePhoto(WTFMove(settings))->whenSettled(RunLoop::main(), [protectedThis = Ref { *this }, promise = WTFMove(promise)] (auto&& result) mutable {
-        queueTaskKeepingObjectAlive(protectedThis.get(), TaskSource::ImageCapture, [promise = WTFMove(promise), result = WTFMove(result), protectedThis = WTFMove(protectedThis)] () mutable {
+        queueTaskKeepingObjectAlive(protectedThis.get(), TaskSource::ImageCapture, [promise = WTFMove(promise), result = WTFMove(result), protectedThis] () mutable {
             if (!result)
                 promise.reject(WTFMove(result.error()));
             else
