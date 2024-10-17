@@ -566,7 +566,6 @@ HTMLMediaElement::HTMLMediaElement(const QualifiedName& tagName, Document& docum
     , m_autoplaying(true)
     , m_muted(false)
     , m_explicitlyMuted(false)
-    , m_initiallyMuted(false)
     , m_paused(true)
     , m_seeking(false)
     , m_seekRequested(false)
@@ -3162,7 +3161,6 @@ void HTMLMediaElement::setReadyState(MediaPlayer::ReadyState state)
             if (hasEnabledTargetAvailabilityListeners())
                 enqueuePlaybackTargetAvailabilityChangedEvent(EnqueueBehavior::OnlyWhenChanged);
 #endif
-            m_initiallyMuted = m_volume < 0.05 || muted();
 
             updateRenderer();
 
@@ -4574,6 +4572,9 @@ void HTMLMediaElement::setControls(bool controls)
 
 double HTMLMediaElement::volume() const
 {
+    if (m_implicitlyMuted.value_or(false))
+        return 0;
+
     return m_volume;
 }
 
@@ -4584,7 +4585,8 @@ ExceptionOr<void> HTMLMediaElement::setVolume(double volume)
     if (!(volume >= 0 && volume <= 1))
         return Exception { ExceptionCode::IndexSizeError };
 
-    if (m_volume == volume)
+    auto muteImplicitly = !volume;
+    if (m_volume == volume && (!m_implicitlyMuted || *m_implicitlyMuted == muteImplicitly))
         return { };
 
 #if HAVE(MEDIA_VOLUME_PER_ELEMENT)
@@ -4605,6 +4607,13 @@ ExceptionOr<void> HTMLMediaElement::setVolume(double volume)
     auto oldVolume = m_volume;
     m_volume = volume;
 
+    if (m_implicitlyMuted.value_or(false) != muteImplicitly) {
+        m_implicitlyMuted = muteImplicitly;
+        setMutedInternal(m_muted, ForceMuteChange::True);
+        if (volume)
+            m_implicitlyMuted = std::nullopt;
+    }
+
     if (m_volumeRevertTaskCancellationGroup.hasPendingTask())
         return { };
 
@@ -4619,15 +4628,29 @@ ExceptionOr<void> HTMLMediaElement::setVolume(double volume)
 
 bool HTMLMediaElement::muted() const
 {
-    return m_explicitlyMuted ? m_muted : hasAttributeWithoutSynchronization(mutedAttr);
+    if (m_implicitlyMuted.value_or(false))
+        return true;
+
+    if (m_explicitlyMuted)
+        return m_muted;
+
+    return hasAttributeWithoutSynchronization(mutedAttr);
 }
 
 void HTMLMediaElement::setMuted(bool muted)
 {
+    auto muteIsImplicit = m_implicitlyMuted.value_or(false);
+    m_implicitlyMuted = std::nullopt;
+    setMutedInternal(muted, muteIsImplicit ? ForceMuteChange::True : ForceMuteChange::False);
+}
+
+void HTMLMediaElement::setMutedInternal(bool muted, ForceMuteChange forceChange)
+{
     ALWAYS_LOG(LOGIDENTIFIER, muted);
 
-    bool mutedStateChanged = m_muted != muted;
+    bool mutedStateChanged = m_muted != muted || forceChange == ForceMuteChange::True;
     if (mutedStateChanged || !m_explicitlyMuted) {
+
         if (processingUserGestureForMedia()) {
             removeBehaviorRestrictionsAfterFirstUserGesture(MediaElementSession::AllRestrictions & ~MediaElementSession::RequireUserGestureToControlControlsManager);
 
@@ -4636,7 +4659,8 @@ void HTMLMediaElement::setMuted(bool muted)
         }
         Style::PseudoClassChangeInvalidation styleInvalidation(*this, CSSSelector::PseudoClass::Muted, muted);
         m_muted = muted;
-        m_explicitlyMuted = true;
+        if (!m_explicitlyMuted && !m_implicitlyMuted.value_or(false))
+            m_explicitlyMuted = !m_explicitlyMuted && !m_implicitlyMuted.value_or(false);
 
         // Avoid recursion when the player reports volume changes.
         if (!processingMediaPlayerCallback()) {

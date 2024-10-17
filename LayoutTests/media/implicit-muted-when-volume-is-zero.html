@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv='Content-Type' content='text/html; charset=utf-8' />
+        <script src="video-test.js"></script>
+        <script src="media-file.js"></script>
+        <script>
+        window.addEventListener('load', async event => {
+            video = document.querySelector('video');
+            if (window.internals)
+                internals.setMediaElementRestrictions(video, 'NoRestrictions');
+
+            video.src = findMediaFile('audio', 'content/silence');
+            await new Promise(resolve => video.oncanplaythrough = resolve);
+
+            testExpected('video.muted', true);
+            testExpected('video.volume', 1);
+
+            run('video.muted = false');
+            testExpected('video.muted', false);
+            testExpected('video.volume', 1);
+
+            run('video.volume = 0');
+            testExpected('video.volume', 0);
+            testExpected('video.muted', true);
+
+            run('video.muted = false');
+            testExpected('video.volume', 0);
+            testExpected('video.muted', false);
+
+            run('video.volume = 0.5');
+            testExpected('video.volume', 0.5);
+            testExpected('video.muted', false);
+
+             endTest();
+         }, {once: true});
+
+        </script>
+    </head>
+    <body>
+        <video controls muted>
+        </video>
+    </body>
+</html>

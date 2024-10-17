@@ -7496,5 +7496,8 @@ webkit.org/b/257011 imported/w3c/web-platform-tests/css/css-text/hyphens/hyphena
 # webkit.org/b/281089 REGRESSION(284750@main): [macOS iOS Debug] ASSERTION FAILED: !child->frameID() in http/tests/site-isolation/draw-after-cross-origin-navigation-between-two-remote-frames.html
 [ Debug ] http/tests/site-isolation/draw-after-cross-origin-navigation-between-two-remote-frames.html [ Pass Timeout ImageOnlyFailure ]
 
+# Tests and iOS-only behavior
+media/implicit-muted-when-volume-is-zero.html [ Pass ]
+
 webkit.org/b/281238 compositing/tiling/tile-cache-zoomed.html [ Failure ]
 

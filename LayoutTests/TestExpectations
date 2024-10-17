@@ -3990,6 +3990,7 @@ imported/w3c/web-platform-tests/websockets/Create-on-worker-shutdown.any.html [ 
 
 # iOS only
 fast/dom/linkify-phone-numbers.html [ ImageOnlyFailure ]
+media/implicit-muted-when-volume-is-zero.html [ Skip ]
 
 webkit.org/b/199039 editing/deleting/smart-delete-paragraph-003.html [ Skip ]
 

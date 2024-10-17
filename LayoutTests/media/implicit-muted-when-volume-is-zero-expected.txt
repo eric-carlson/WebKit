@@ -1,0 +1,17 @@
+
+EXPECTED (video.muted == 'true') OK
+EXPECTED (video.volume == '1') OK
+RUN(video.muted = false)
+EXPECTED (video.muted == 'false') OK
+EXPECTED (video.volume == '1') OK
+RUN(video.volume = 0)
+EXPECTED (video.volume == '0') OK
+EXPECTED (video.muted == 'true') OK
+RUN(video.muted = false)
+EXPECTED (video.volume == '0') OK
+EXPECTED (video.muted == 'false') OK
+RUN(video.volume = 0.5)
+EXPECTED (video.volume == '0.5') OK
+EXPECTED (video.muted == 'false') OK
+END OF TEST
+
