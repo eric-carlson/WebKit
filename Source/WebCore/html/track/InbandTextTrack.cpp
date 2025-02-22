@@ -63,6 +63,7 @@ InbandTextTrack::InbandTextTrack(ScriptExecutionContext& context, InbandTextTrac
     : TextTrack(&context, emptyAtom(), trackPrivate.id(), trackPrivate.label(), trackPrivate.language(), InBand)
     , m_private(trackPrivate)
 {
+    setShouldPurgeCuesFromUnbufferedRanges(true);
     addClientToTrackPrivateBase(*this, trackPrivate);
     updateKindFromPrivate();
 }
