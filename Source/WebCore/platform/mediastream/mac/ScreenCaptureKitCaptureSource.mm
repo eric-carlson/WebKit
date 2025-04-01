@@ -113,7 +113,7 @@ using namespace WebCore;
     RetainPtr attachments = (__bridge NSArray *)PAL::CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
     SCFrameStatus status = SCFrameStatusStopped;
     [attachments enumerateObjectsUsingBlock:makeBlockPtr([&] (NSDictionary *attachment, NSUInteger, BOOL *stop) {
-        auto statusNumber = (NSNumber *)attachment[SCStreamFrameInfoStatus];
+        RetainPtr statusNumber = (NSNumber *)attachment[SCStreamFrameInfoStatus];
         if (!statusNumber)
             return;
 
@@ -560,7 +560,7 @@ void ScreenCaptureKitCaptureSource::streamDidOutputVideoSampleBuffer(RetainPtr<C
 #if HAVE(SC_CONTENT_SHARING_PICKER)
     auto canCheckForOverlayMode = PAL::canLoad_ScreenCaptureKit_SCStreamFrameInfoPresenterOverlayContentRect();
 #endif
-    [attachments.get() enumerateObjectsUsingBlock:makeBlockPtr([this, weakThis = WeakPtr { *this }, &scaleFactor, &contentScale, &contentRect, &canCheckForOverlayMode, &shouldDisallowReconfiguration, &status] (NSDictionary *attachment, NSUInteger, BOOL *stop) {
+    [attachments.get() enumerateObjectsUsingBlock:makeBlockPtr([weakThis = WeakPtr { *this }, &scaleFactor, &contentScale, &contentRect, &canCheckForOverlayMode, &shouldDisallowReconfiguration, &status] (NSDictionary *attachment, NSUInteger, BOOL *stop) {
         RefPtr protectedThis = weakThis.get();
         if (!protectedThis)
             return;
@@ -578,7 +578,7 @@ void ScreenCaptureKitCaptureSource::streamDidOutputVideoSampleBuffer(RetainPtr<C
         }
 
 #if HAVE(SC_CONTENT_SHARING_PICKER)
-        if (m_isVideoEffectEnabled && canCheckForOverlayMode) {
+        if (protectedThis->m_isVideoEffectEnabled && canCheckForOverlayMode) {
             if (RetainPtr overlayRectDictionary = (CFDictionaryRef)attachment[SCStreamFrameInfoPresenterOverlayContentRect]) {
                 CGRect overlayRect;
                 if (CGRectMakeWithDictionaryRepresentation(overlayRectDictionary.get(), &overlayRect))
