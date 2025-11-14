@@ -1,4 +1,4 @@
- /*
+/*
  * Copyright (C) 2025 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,58 +28,28 @@
 #if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
 
 #include "RemoteMediaSessionState.h"
-#include <WebCore/PlatformMediaSessionInterface.h>
-#include <WebCore/PlatformMediaSessionTypes.h>
-#include <wtf/RefCounted.h>
-#include <wtf/TZoneMalloc.h>
+#include <WebCore/PlatformMediaSession.h>
 
 namespace WebKit {
 
-class RemoteMediaSessionManagerProxy;
-
-class RemoteMediaSessionClientProxy final
-    : public WebCore::PlatformMediaSessionClient
-    , public RefCounted<RemoteMediaSessionClientProxy> {
-    WTF_MAKE_TZONE_ALLOCATED(RemoteMediaSessionClientProxy);
+class RemoteMediaSessionProxy final
+    : public WebCore::PlatformMediaSession {
+    WTF_MAKE_TZONE_ALLOCATED(RemoteMediaSessionProxy);
 public:
-    RemoteMediaSessionClientProxy(RemoteMediaSessionState&, RemoteMediaSessionManagerProxy&);
-    virtual ~RemoteMediaSessionClientProxy();
+    static Ref<RemoteMediaSessionProxy> create(RemoteMediaSessionState& state, RemoteMediaSessionManagerProxy& manager)
+    {
+        return adoptRef(*new RemoteMediaSessionProxy(state, manager));
+    }
+
+    virtual ~RemoteMediaSessionProxy();
+
+    void updateState(const RemoteMediaSessionState&);
+
+private:
+    RemoteMediaSessionProxy(RemoteMediaSessionState&, RemoteMediaSessionManagerProxy&);
 
     WebCore::MediaSessionIdentifier sessionIdentifier() const { return m_state.sessionIdentifier; }
-
-    void updateState(const RemoteMediaSessionState& state) { m_state = state; }
-
-#if !RELEASE_LOG_DISABLED
-    uint64_t logIdentifier() const { return m_state.logIdentifier; }
-#endif
-
     WebCore::PageIdentifier pageIdentifier() const { return m_state.pageIdentifier; }
-
-protected:
-
-    RefPtr<WebCore::MediaSessionManagerInterface> sessionManager() const final;
-
-    WebCore::PlatformMediaSessionMediaType mediaType() const final { return m_state.mediaType; }
-    WebCore::PlatformMediaSessionMediaType presentationType() const final { return m_state.presentationType; }
-    WebCore::PlatformMediaSessionDisplayType displayType() const final { return m_state.displayType; }
-
-    void resumeAutoplaying() final;
-    void mayResumePlayback(bool shouldResume) final;
-    void suspendPlayback() final;
-
-    bool canReceiveRemoteControlCommands() const final { return m_state.canReceiveRemoteControlCommands; }
-    void didReceiveRemoteControlCommand(WebCore::PlatformMediaSessionRemoteControlCommandType, const WebCore::PlatformMediaSessionRemoteCommandArgument&) final;
-    bool supportsSeeking() const final { return m_state.supportsSeeking; }
-
-    bool canProduceAudio() const final { return m_state.canProduceAudio; }
-    bool isSuspended() const final { return m_state.isSuspended; }
-    bool isPlaying() const final { return m_state.isPlaying; }
-    bool isAudible() const final { return m_state.isAudible; }
-    bool isEnded() const final { return m_state.isEnded; }
-    MediaTime mediaSessionDuration() const final { return m_state.duration; }
-
-    bool shouldOverrideBackgroundPlaybackRestriction(WebCore::PlatformMediaSessionInterruptionType) const final;
-    bool shouldOverrideBackgroundLoadingRestriction() const final { return m_state.shouldOverrideBackgroundLoadingRestriction; }
 
     bool isPlayingToWirelessPlaybackTarget() const final { return m_state.isPlayingToWirelessPlaybackTarget; }
     void setShouldPlayToPlaybackTarget(bool) final;
@@ -100,9 +70,9 @@ protected:
 #if !RELEASE_LOG_DISABLED
     const Logger& logger() const { return m_logger; }
     Ref<const Logger> protectedLogger() const { return logger(); }
+    uint64_t logIdentifier() const { return m_state.logIdentifier; }
 #endif
 
-private:
     WeakPtr<RemoteMediaSessionManagerProxy> m_manager;
     RemoteMediaSessionState m_state;
 #if !RELEASE_LOG_DISABLED

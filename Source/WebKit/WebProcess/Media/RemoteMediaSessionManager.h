@@ -30,7 +30,10 @@
 #include "MessageReceiver.h"
 #include "MessageSender.h"
 #include "WebPageProxyIdentifier.h"
+#include <WebCore/MediaSessionIdentifier.h>
+#include <WebCore/PageIdentifier.h>
 #include <WebCore/PlatformMediaSessionManager.h>
+#include <wtf/HashMap.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/Vector.h>
 #include <wtf/WeakListHashSet.h>
@@ -43,36 +46,50 @@ class RemoteMediaSessionManager
     : public WebCore::PlatformMediaSessionManager
     , public IPC::MessageReceiver
     , public IPC::MessageSender {
-        WTF_MAKE_TZONE_ALLOCATED(RemoteMediaSessionManager);
-    public:
-        static RefPtr<RemoteMediaSessionManager> create(WebPage& topPage, WebPage& localPage);
+    WTF_MAKE_TZONE_ALLOCATED(RemoteMediaSessionManager);
+public:
+    static RefPtr<RemoteMediaSessionManager> create(WebPage& topPage, WebPage& localPage);
 
-        virtual ~RemoteMediaSessionManager();
+    virtual ~RemoteMediaSessionManager();
 
-        void ref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::ref(); }
-        void deref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::deref(); }
+    void ref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::ref(); }
+    void deref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::deref(); }
 
-    protected:
-        RemoteMediaSessionManager(WebPage& topPage, WebPage& localPage);
+protected:
+    RemoteMediaSessionManager(WebPage& topPage, WebPage& localPage);
 
-        void addSession(WebCore::PlatformMediaSessionInterface&) final;
-        void removeSession(WebCore::PlatformMediaSessionInterface&) final;
-        void setCurrentSession(WebCore::PlatformMediaSessionInterface&) final;
+    void addSession(WebCore::PlatformMediaSessionInterface&) final;
+    void removeSession(WebCore::PlatformMediaSessionInterface&) final;
+    void setCurrentSession(WebCore::PlatformMediaSessionInterface&) final;
 
-        void didReceiveMessage(IPC::Connection&, IPC::Decoder&);
+    void clientShouldResumeAutoplaying(WebCore::MediaSessionIdentifier);
+    void clientMayResumePlayback(WebCore::MediaSessionIdentifier, bool);
+    void clientShouldSuspendPlayback(WebCore::MediaSessionIdentifier);
+    void clientSetShouldPlayToPlaybackTarget(WebCore::MediaSessionIdentifier, bool);
+    void clientDidReceiveRemoteControlCommand(WebCore::MediaSessionIdentifier, WebCore::PlatformMediaSessionRemoteControlCommandType, WebCore::PlatformMediaSessionRemoteCommandArgument);
 
-        // IPC::MessageSender.
-        IPC::Connection* messageSenderConnection() const final;
-        uint64_t messageSenderDestinationID() const final;
+    void didReceiveMessage(IPC::Connection&, IPC::Decoder&);
 
-    private:
-        void updateSessionState() final;
+    // IPC::MessageSender.
+    IPC::Connection* messageSenderConnection() const final;
+    uint64_t messageSenderDestinationID() const final;
 
-        WeakPtr<WebPage> m_topPage;
-        WeakPtr<WebPage> m_localPage;
-        WebCore::PageIdentifier m_topPageID;
-        WebCore::PageIdentifier m_localPageID;
-    };
+    std::optional<SharedPreferencesForWebProcess> sharedPreferencesForWebProcess() const;
+
+private:
+    RemoteMediaSessionState& currentSessionState(const WebCore::PlatformMediaSessionInterface&);
+    RemoteMediaSessionState fullSessionState(const WebCore::PlatformMediaSessionInterface&);
+    void updateCachedSessionState(const WebCore::PlatformMediaSessionInterface&, RemoteMediaSessionState&);
+
+    void updateSessionState() final;
+    RefPtr<WebCore::PlatformMediaSessionInterface> sessionWithIdentifier(WebCore::MediaSessionIdentifier);
+
+    WeakPtr<WebPage> m_topPage;
+    WeakPtr<WebPage> m_localPage;
+    WebCore::PageIdentifier m_topPageID;
+    WebCore::PageIdentifier m_localPageID;
+    HashMap<WebCore::MediaSessionIdentifier, UniqueRef<RemoteMediaSessionState>> m_cachedSessionState;
+};
 
 } // namespace WebKit
 

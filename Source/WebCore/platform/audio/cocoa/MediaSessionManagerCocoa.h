@@ -42,15 +42,21 @@ struct NowPlayingInfo;
 
 enum class MediaPlayerPitchCorrectionAlgorithm : uint8_t;
 
-class MediaSessionManagerCocoa
+class WEBCORE_EXPORT MediaSessionManagerCocoa
     : public PlatformMediaSessionManager
-    , private NowPlayingManagerClient
-    , private AudioHardwareListener::Client {
+    , public NowPlayingManagerClient
+    , public AudioHardwareListener::Client {
     WTF_MAKE_TZONE_ALLOCATED(MediaSessionManagerCocoa);
 public:
     MediaSessionManagerCocoa(PageIdentifier);
     
-    void updateSessionState() final;
+    static WEBCORE_EXPORT void clearNowPlayingInfo();
+    static WEBCORE_EXPORT void setNowPlayingInfo(bool setAsNowPlayingApplication, bool shouldUpdateNowPlayingSuppression, const NowPlayingInfo&);
+
+    static String audioTimePitchAlgorithmForMediaPlayerPitchCorrectionAlgorithm(MediaPlayerPitchCorrectionAlgorithm, bool preservesPitch, double rate);
+
+protected:
+    void updateSessionState() override;
     void beginInterruption(PlatformMediaSession::InterruptionType) final;
 
     bool hasActiveNowPlayingSession() const final { return m_nowPlayingActive; }
@@ -62,12 +68,7 @@ public:
     bool haveEverRegisteredAsNowPlayingApplication() const final { return m_haveEverRegisteredAsNowPlayingApplication; }
 
     std::optional<NowPlayingInfo> nowPlayingInfo() const final { return m_nowPlayingInfo; }
-    static WEBCORE_EXPORT void clearNowPlayingInfo();
-    static WEBCORE_EXPORT void setNowPlayingInfo(bool setAsNowPlayingApplication, bool shouldUpdateNowPlayingSuppression, const NowPlayingInfo&);
 
-    static String audioTimePitchAlgorithmForMediaPlayerPitchCorrectionAlgorithm(MediaPlayerPitchCorrectionAlgorithm, bool preservesPitch, double rate);
-
-protected:
     void scheduleSessionStatusUpdate() final;
     void updateNowPlayingInfo();
     void updateActiveNowPlayingSession(RefPtr<PlatformMediaSessionInterface>);

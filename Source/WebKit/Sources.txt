@@ -639,8 +639,10 @@ UIProcess/Inspector/Agents/InspectorBrowserAgent.cpp
 
 UIProcess/Media/AudioSessionRoutingArbitratorProxy.cpp
 UIProcess/Media/MediaUsageManager.cpp
+UIProcess/Media/RemoteMediaSessionClientProxy.cpp
 UIProcess/Media/RemoteMediaSessionCoordinatorProxy.cpp
 UIProcess/Media/RemoteMediaSessionManagerProxy.cpp
+UIProcess/Media/RemoteMediaSessionProxy.cpp
 
 UIProcess/Notifications/ServiceWorkerNotificationHandler.cpp
 UIProcess/Notifications/WebNotification.cpp

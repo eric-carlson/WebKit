@@ -1,4 +1,4 @@
- /*
+/*
  * Copyright (C) 2025 Apple Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -24,75 +24,43 @@
  */
 
 #include "config.h"
-#include "RemoteMediaSessionClientProxy.h"
+#include "RemoteMediaSessionProxy.h"
 
 #if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
 
 #include "RemoteMediaSessionManagerMessages.h"
 #include "RemoteMediaSessionManagerProxy.h"
+#include <WebCore/NotImplemented.h>
 
 namespace WebKit {
 
-WTF_MAKE_TZONE_ALLOCATED_IMPL(RemoteMediaSessionClientProxy);
+WTF_MAKE_TZONE_ALLOCATED_IMPL(RemoteMediaSessionProxy);
 
-RemoteMediaSessionClientProxy::RemoteMediaSessionClientProxy(RemoteMediaSessionState& state, RemoteMediaSessionManagerProxy& manager)
-    : PlatformMediaSessionClient()
+RemoteMediaSessionProxy::RemoteMediaSessionProxy(RemoteMediaSessionState& state, RemoteMediaSessionManagerProxy& manager)
+    : PlatformMediaSession(*new RemoteMediaSessionClientProxy(state, manager))
     , m_manager(manager)
     , m_state(state)
 #if !RELEASE_LOG_DISABLED
     , m_logger(manager.process()->logger())
 #endif
 {
+    setMediaSessionIdentifier(state.sessionIdentifier);
 }
 
-RemoteMediaSessionClientProxy::~RemoteMediaSessionClientProxy()
+RemoteMediaSessionProxy::~RemoteMediaSessionProxy()
 {
 }
 
-void RemoteMediaSessionClientProxy::resumeAutoplaying()
+void RemoteMediaSessionProxy::updateState(const RemoteMediaSessionState& state)
 {
-    if (RefPtr manager = m_manager.get())
-        manager->send(Messages::RemoteMediaSessionManager::ClientShouldResumeAutoplaying(sessionIdentifier()));
+    // FIXME: merge changes, notify as necessary
+    m_state = state;
 }
 
-void RemoteMediaSessionClientProxy::mayResumePlayback(bool shouldResume)
-{
-    if (RefPtr manager = m_manager.get())
-        manager->send(Messages::RemoteMediaSessionManager::ClientMayResumePlayback(sessionIdentifier(), shouldResume));
-}
-
-void RemoteMediaSessionClientProxy::suspendPlayback()
-{
-    if (RefPtr manager = m_manager.get())
-        manager->send(Messages::RemoteMediaSessionManager::ClientShouldSuspendPlayback(sessionIdentifier()));
-}
-
-void RemoteMediaSessionClientProxy::didReceiveRemoteControlCommand(WebCore::PlatformMediaSessionRemoteControlCommandType command, const WebCore::PlatformMediaSessionRemoteCommandArgument& argument)
-{
-    if (RefPtr manager = m_manager.get())
-        manager->send(Messages::RemoteMediaSessionManager::ClientDidReceiveRemoteControlCommand(sessionIdentifier(), command, argument));
-}
-
-bool RemoteMediaSessionClientProxy::shouldOverrideBackgroundPlaybackRestriction(WebCore::PlatformMediaSessionInterruptionType) const
-{
-    // FIXME: Sync XPC?
-    notImplemented();
-
-    return false;
-}
-
-void RemoteMediaSessionClientProxy::setShouldPlayToPlaybackTarget(bool shouldPlay)
+void RemoteMediaSessionProxy::setShouldPlayToPlaybackTarget(bool shouldPlay)
 {
     if (RefPtr manager = m_manager.get())
         manager->send(Messages::RemoteMediaSessionManager::ClientSetShouldPlayToPlaybackTarget(sessionIdentifier(), shouldPlay));
-}
-
-RefPtr<WebCore::MediaSessionManagerInterface> RemoteMediaSessionClientProxy::sessionManager() const
-{
-    if (RefPtr manager = m_manager.get())
-        return manager;
-
-    return nullptr;
 }
 
 } // namespace WebKit

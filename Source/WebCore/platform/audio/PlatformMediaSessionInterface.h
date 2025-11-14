@@ -54,7 +54,7 @@ class PlatformMediaSession;
 class PlatformMediaSessionInterface;
 class PlatformMediaSessionManager;
 
-class PlatformMediaSessionClient : public CanMakeCheckedPtr<PlatformMediaSessionClient> {
+class WEBCORE_EXPORT PlatformMediaSessionClient : public CanMakeCheckedPtr<PlatformMediaSessionClient> {
     WTF_MAKE_NONCOPYABLE(PlatformMediaSessionClient);
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(PlatformMediaSessionClient);
     WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(PlatformMediaSessionClient);
@@ -117,7 +117,7 @@ protected:
 
 PlatformMediaSessionClient& emptyPlatformMediaSessionClient();
 
-class PlatformMediaSessionInterface
+class WEBCORE_EXPORT PlatformMediaSessionInterface
     : public RefCountedAndCanMakeWeakPtr<PlatformMediaSessionInterface>
 #if ENABLE(WIRELESS_PLAYBACK_TARGET)
     , public MediaPlaybackTargetClient
@@ -223,6 +223,7 @@ public:
 
     virtual bool isLongEnoughForMainContent() const { return false; }
 
+    void setMediaSessionIdentifier(MediaSessionIdentifier);
     virtual MediaSessionIdentifier mediaSessionIdentifier() const { return m_mediaSessionIdentifier; }
 
     virtual bool isActiveNowPlayingSession() const = 0;
@@ -262,5 +263,7 @@ private:
     MediaSessionIdentifier m_mediaSessionIdentifier;
     bool m_hasPlayedAudiblySinceLastInterruption { false };
 };
+
+inline void PlatformMediaSessionInterface::setMediaSessionIdentifier(MediaSessionIdentifier identifier) { m_mediaSessionIdentifier = identifier; }
 
 } // namespace WebCore

@@ -29,43 +29,59 @@
 
 #include "MessageReceiver.h"
 #include "MessageSender.h"
-#include "WebPageProxy.h"
-#include <WebCore/MediaSessionManagerInterface.h>
+#include "WebProcessProxy.h"
 #include <WebCore/PageIdentifier.h>
-#include <WebCore/PlatformMediaSessionInterface.h>
 #include <wtf/RefCounted.h>
 #include <wtf/TZoneMalloc.h>
 
+
+#if PLATFORM(IOS_FAMILY)
+#include <WebCore/MediaSessionManageriOS.h>
+#define REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS MediaSessionManageriOS
+#elif PLATFORM(COCOA)
+#include <WebCore/MediaSessionManagerCocoa.h>
+#define REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS MediaSessionManagerCocoa
+#else
+#include <WebCore/PlatformMediaSessionManager.h>
+#define REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS PlatformMediaSessionManager
+#endif
+
 namespace WebCore {
-class PlatformMediaSessionManager;
+class PlatformMediaSessionInterface;
 }
 
 namespace WebKit {
 
+class RemoteMediaSessionProxy;
 class WebProcessProxy;
 struct RemoteMediaSessionState;
 
 class RemoteMediaSessionManagerProxy
-    : public RefCounted<RemoteMediaSessionManagerProxy>
+    : public WebCore::REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS
     , public IPC::MessageReceiver
     , public IPC::MessageSender {
     WTF_MAKE_TZONE_ALLOCATED(RemoteMediaSessionManagerProxy);
 public:
+    USING_CAN_MAKE_WEAKPTR(REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS);
+
     static RefPtr<RemoteMediaSessionManagerProxy> create(WebCore::PageIdentifier, WebProcessProxy&);
 
     virtual ~RemoteMediaSessionManagerProxy();
 
-    void ref() const { RefCounted::ref(); }
-    void deref() const { RefCounted::deref(); }
+    void ref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::ref(); }
+    void deref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::deref(); }
 
-protected:
+    const Ref<WebProcessProxy> process() const { return m_process; }
+
+private:
     RemoteMediaSessionManagerProxy(WebCore::PageIdentifier, WebProcessProxy&);
 
-    void addSession(RemoteMediaSessionState&&);
-    void removeSession(RemoteMediaSessionState&&);
-    void setCurrentSession(RemoteMediaSessionState&&);
+    void addMediaSession(RemoteMediaSessionState&&);
+    void removeMediaSession(RemoteMediaSessionState&&);
+    void setCurrentMediaSession(RemoteMediaSessionState&&);
+    void updateMediaSessionState();
 
-    void updateSessionState();
+    RefPtr<WebCore::PlatformMediaSessionInterface> findSession(RemoteMediaSessionState&);
 
     void didReceiveMessage(IPC::Connection&, IPC::Decoder&);
 
@@ -75,9 +91,13 @@ protected:
 
     std::optional<SharedPreferencesForWebProcess> sharedPreferencesForWebProcess() const;
 
-private:
+#if !RELEASE_LOG_DISABLED
+    ASCIILiteral logClassName() const final { return "RemoteMediaSessionManagerProxy"_s; }
+#endif
+
     const Ref<WebProcessProxy> m_process;
     WebCore::PageIdentifier m_topPageID;
+    HashMap<WebCore::MediaSessionIdentifier, Ref<RemoteMediaSessionProxy>> m_sessionProxies;
 };
 
 } // namespace WebKit

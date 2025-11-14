@@ -28,10 +28,10 @@
     EnabledBy=RemoteMediaSessionManagerEnabled
 ]
 messages -> RemoteMediaSessionManagerProxy {
-    void UpdateSessionState()
-    void AddSession(struct WebKit::RemoteMediaSessionState session);
-    void RemoveSession(struct WebKit::RemoteMediaSessionState session);
-    void SetCurrentSession(struct WebKit::RemoteMediaSessionState session);
+    void UpdateMediaSessionState()
+    void AddMediaSession(struct WebKit::RemoteMediaSessionState session);
+    void RemoveMediaSession(struct WebKit::RemoteMediaSessionState session);
+    void SetCurrentMediaSession(struct WebKit::RemoteMediaSessionState session);
 }
 
 #endif // ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
