@@ -134,7 +134,12 @@ public:
 
         play();
         pause();
-        ASSERT_EQ(gpuProcessPID(), getNowPlayingClientPid());
+        // After async audio session activation, now playing registration may be delayed.
+        // Poll to allow the async IPC, scheduleSessionStatusUpdate, and MRMediaRemote to settle.
+        pid_t nowPlayingPid = 0;
+        for (int i = 0; i < 50 && !nowPlayingPid; ++i)
+            nowPlayingPid = getNowPlayingClientPid();
+        ASSERT_EQ(gpuProcessPID(), nowPlayingPid);
     }
 
     void runScriptWithUserGesture(NSString *script)

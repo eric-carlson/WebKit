@@ -123,6 +123,10 @@ public:
     void cancelGetDisplayMediaPrompt();
 #endif
 
+#if USE(AUDIO_SESSION)
+    void tryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier, bool, CompletionHandler<void(bool)>&&);
+#endif
+
     void removeSession(PAL::SessionID);
 
 #if PLATFORM(MAC)

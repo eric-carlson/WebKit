@@ -129,27 +129,52 @@ void AudioSession::addAudioSessionChangedObserver(const ChangedObserver& observe
         observer(Ref { *sharedAudioSession() });
 }
 
-bool AudioSession::tryToSetActive(bool active)
+void AudioSession::tryToSetActive(bool active, CompletionHandler<void(bool)>&& completionHandler)
 {
+    auto logSiteIdentifier = LOGIDENTIFIER;
     bool previousIsActive = isActive();
-    if (!tryToSetActiveInternal(active))
-        return false;
+    tryToSetActiveInternal(active, [weakThis = ThreadSafeWeakPtr { *this }, active, previousIsActive, completionHandler = WTF::move(completionHandler), logSiteIdentifier = WTF::move(logSiteIdentifier)](bool success) mutable {
 
-    ALWAYS_LOG(LOGIDENTIFIER, "is active = ", active, ", previousIsActive = ", previousIsActive);
+        RefPtr protectedThis = weakThis.get();
+        if (!success || !protectedThis) {
+            completionHandler(false);
+            return;
+        }
 
-    bool hasActiveChanged = previousIsActive != isActive();
-    m_active = active;
-    if (m_isInterrupted && m_active) {
-        callOnMainThread([hasActiveChanged] {
-            if (singleton().m_isInterrupted && singleton().m_active)
-                singleton().endInterruption(MayResume::Yes);
+        ALWAYS_LOG_WITH_THIS(protectedThis, logSiteIdentifier, "is active = ", protectedThis->m_active, ", previousIsActive = ", previousIsActive);
+
+        // Use m_active (not previousIsActive) to detect whether activeStateChanged() was already
+        // fired from the synchronous optimistic-update path below. If it was, m_active is already
+        // set to `active`, so hasActiveChanged is false here and we don't double-fire.
+        bool hasActiveChanged = protectedThis->m_active != active;
+        protectedThis->m_active = active;
+        if (active && protectedThis->m_isInterrupted) {
+            auto& session = singleton();
+            if (session.m_isInterrupted && session.m_active)
+                session.endInterruption(MayResume::Yes);
             if (hasActiveChanged)
-                singleton().activeStateChanged();
-        });
-    } else if (hasActiveChanged)
-        activeStateChanged();
+                session.activeStateChanged();
+            completionHandler(true);
 
-    return true;
+            return;
+        }
+
+        if (hasActiveChanged)
+            protectedThis->activeStateChanged();
+
+        completionHandler(true);
+    });
+
+    // RemoteAudioSession::tryToSetActiveInternal sets configuration().isActive synchronously
+    // (optimistic update) before the async IPC reply arrives. If isActive() already reflects
+    // the new state, fire activeStateChanged() now so that observers (e.g., DOMAudioSession)
+    // react before control returns to the caller. This restores the synchronous notification
+    // behavior that existed before the sendSync → sendWithAsyncReply migration (bug 308155).
+    // Setting m_active here prevents the async callback above from double-firing.
+    if (previousIsActive != isActive()) {
+        m_active = isActive();
+        activeStateChanged();
+    }
 }
 
 static WeakHashSet<AudioSessionInterruptionObserver>& audioSessionInterruptionObserversSingleton()
@@ -257,10 +282,10 @@ size_t AudioSession::maximumNumberOfOutputChannels() const
     return 0;
 }
 
-bool AudioSession::tryToSetActiveInternal(bool)
+void AudioSession::tryToSetActiveInternal(bool, CompletionHandler<void(bool)>&& completionHandler)
 {
     notImplemented();
-    return true;
+    completionHandler(true);
 }
 
 size_t AudioSession::preferredBufferSize() const

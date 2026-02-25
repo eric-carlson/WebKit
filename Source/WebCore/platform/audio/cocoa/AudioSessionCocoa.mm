@@ -93,7 +93,7 @@ void AudioSessionCocoa::setEligibleForSmartRouting(bool isEligible, ForceUpdate 
     });
 }
 
-bool AudioSessionCocoa::tryToSetActiveInternal(bool active)
+void AudioSessionCocoa::tryToSetActiveInternal(bool active, CompletionHandler<void(bool)>&& completionHandler)
 {
 #if HAVE(AVAUDIOSESSION)
     // FIXME: This is a safer cpp false positive (160259918).
@@ -101,8 +101,10 @@ bool AudioSessionCocoa::tryToSetActiveInternal(bool active)
     // FIXME: This is a safer cpp false positive (160259918).
     SUPPRESS_UNRETAINED_ARG static bool supportsSetActive = [PAL::getAVAudioSessionClassSingleton() instancesRespondToSelector:@selector(setActive:withOptions:error:)];
 
-    if (!supportsSharedInstance)
-        return true;
+    if (!supportsSharedInstance) {
+        completionHandler(true);
+        return;
+    }
 
     // We need to deactivate the session on another queue because the AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation option
     // means that AVAudioSession may synchronously unduck previously ducked clients. Activation needs to complete before this method
@@ -112,36 +114,49 @@ bool AudioSessionCocoa::tryToSetActiveInternal(bool active)
         ASSERT(!isInAuxiliaryProcess() || MediaSessionHelper::sharedHelper().presentedApplicationPID());
 #endif
 
-        bool success = false;
         setEligibleForSmartRouting(true);
-        m_workQueue->dispatchSync([&success] {
-            NSError *error = nil;
+        RetainPtr<NSError> error;
+        m_workQueue->dispatchSync([&error] mutable {
             if (supportsSetActive) {
+                NSError *rawError = nil;
                 // FIXME: This is a safer cpp false positive (160259918).
-                SUPPRESS_UNRETAINED_ARG [[PAL::getAVAudioSessionClassSingleton() sharedInstance] setActive:YES withOptions:0 error:&error];
+                SUPPRESS_UNRETAINED_ARG [[PAL::getAVAudioSessionClassSingleton() sharedInstance] setActive:YES withOptions:0 error:&rawError];
+                error = rawError;
             }
-            if (error)
-                RELEASE_LOG_ERROR(Media, "failed to activate audio session, error: %@", error.localizedDescription);
-            success = !error;
         });
-        return success;
+        if (error)
+            RELEASE_LOG_ERROR(Media, "failed to activate audio session, error: %@", [error localizedDescription]);
+        completionHandler(!error);
+        return;
     }
 
-    m_workQueue->dispatch([] {
+    setEligibleForSmartRouting(false);
+    m_workQueue->dispatch([weakThis = ThreadSafeWeakPtr { *this }, completionHandler = WTF::move(completionHandler)] mutable {
+        RefPtr protectedThis = weakThis.get();
+        if (!protectedThis) {
+            completionHandler(false);
+            return;
+        }
+
         NSError *error = nil;
         if (supportsSetActive) {
             // FIXME: This is a safer cpp false positive (160259918).
             SUPPRESS_UNRETAINED_ARG [[PAL::getAVAudioSessionClassSingleton() sharedInstance] setActive:NO withOptions:0 error:&error];
         }
-        if (error)
-            RELEASE_LOG_ERROR(Media, "failed to deactivate audio session, error: %@", error.localizedDescription);
+
+        callOnMainThread([error = RetainPtr { error }, completionHandler = WTF::move(completionHandler), protectedThis = WTF::move(protectedThis)] mutable {
+            if (error)
+                RELEASE_LOG_ERROR(Media, "failed to deactivate audio session, error: %@", [error localizedDescription]);
+            completionHandler(error ? false : true);
+        });
     });
-    setEligibleForSmartRouting(false);
+
 #else
     UNUSED_PARAM(active);
     notImplemented();
-#endif
-    return true;
+
+    completionHandler(true);
+#endif // HAVE(AVAUDIOSESSION)
 }
 
 void AudioSessionCocoa::setCategory(CategoryType newCategory, Mode, RouteSharingPolicy)

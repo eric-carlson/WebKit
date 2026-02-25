@@ -580,7 +580,7 @@ MediaPlayer::BufferingPolicy MediaElementSession::preferredBufferingPolicy() con
         return MediaPlayer::BufferingPolicy::Default;
 
     auto currentPolicy = element->bufferingPolicy();
-    auto isPlaying = state() == PlatformMediaSession::State::Playing;
+    auto isPlaying = state() == PlatformMediaSession::State::Playing || preparingToPlay();
     MediaPlayer::BufferingPolicy newPolicy = [&] {
 
         if (isSuspended())
@@ -1578,7 +1578,7 @@ void MediaElementSession::updateMediaUsageIfChanged()
     MediaUsageInfo usage = {
         element->currentSrc(),
         element->hasSource(),
-        state() == PlatformMediaSession::State::Playing,
+        state() == PlatformMediaSession::State::Playing || preparingToPlay(),
         canShowControlsManager(PlaybackControlsPurpose::ControlsManager),
         !page->isVisibleAndActive(),
         element->isSuspended(),

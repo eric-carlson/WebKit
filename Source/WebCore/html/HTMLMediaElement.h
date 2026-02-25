@@ -986,7 +986,6 @@ private:
     // These "internal" functions do not check user gesture restrictions.
     void playInternal();
     void pauseInternal();
-    void completePlayInternal();
 
     void prepareForLoad();
     void allowVideoRendering();
@@ -1310,6 +1309,7 @@ private:
     bool m_stalled : 1;
     bool m_seekRequested : 1;
     bool m_wasPlayingBeforeSeeking : 1;
+    bool m_hasDeferredPlayingNotification : 1 { false };
 
     // data has not been loaded since sending a "stalled" event
     bool m_sentStalledEvent : 1;

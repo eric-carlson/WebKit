@@ -14,8 +14,8 @@
              video.removeEventListener("ended", finish);
 
              video.currentTime = 0;
-             waitForEvent('playing');
-             waitForEventAndEnd('seeked');
+             waitForEvent('seeked');
+             waitForEventAndEnd('playing');
 
              video.play();
              video.currentTime = video.duration - 0.05;

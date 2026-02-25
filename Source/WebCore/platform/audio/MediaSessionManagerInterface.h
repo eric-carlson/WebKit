@@ -176,7 +176,7 @@ protected:
     WeakPtr<PlatformMediaSessionInterface> firstSessionMatching(NOESCAPE const Function<bool(const PlatformMediaSessionInterface&)>&) const;
 
     void maybeDeactivateAudioSession();
-    bool maybeActivateAudioSession();
+    void maybeActivateAudioSession(CompletionHandler<void(bool)>&&);
 
     void nowPlayingMetadataChanged(const NowPlayingMetadata&);
     void enqueueTaskOnMainThread(Function<void()>&&);
@@ -205,6 +205,7 @@ protected:
 
 private:
     bool has(PlatformMediaSessionMediaType) const;
+    void completeSessionWillBeginPlayback(PlatformMediaSessionInterface&, bool, CompletionHandler<void(bool)>&&);
 
     std::array<MediaSessionRestrictions, static_cast<unsigned>(PlatformMediaSessionMediaType::DOMMediaSession) + 1> m_restrictions;
 
@@ -231,6 +232,7 @@ private:
     mutable bool m_isApplicationInBackground { false };
 #if USE(AUDIO_SESSION)
     bool m_becameActive { false };
+    Vector<CompletionHandler<void(bool)>> m_pendingAudioSessionActivations;
 #endif
 };
 

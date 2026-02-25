@@ -28,12 +28,14 @@
 
 #if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
 
+#include "GPUProcessProxy.h"
 #include "RemoteMediaSessionClientProxy.h"
 #include "RemoteMediaSessionManagerMessages.h"
 #include "RemoteMediaSessionManagerProxyMessages.h"
 #include "RemoteMediaSessionProxy.h"
 #include "RemoteMediaSessionState.h"
 #include "WebPage.h"
+#include "WebPageProxy.h"
 #include <WebCore/NotImplemented.h>
 #include <WebCore/PlatformMediaSessionInterface.h>
 #include <WebCore/PlatformMediaSessionManager.h>
@@ -237,26 +239,39 @@ void RemoteMediaSessionManagerProxy::setCategory(CategoryType type, Mode mode, W
 #endif
 }
 
-bool RemoteMediaSessionManagerProxy::tryToSetActiveInternal(bool active)
+void RemoteMediaSessionManagerProxy::tryToSetActiveInternal(bool active, CompletionHandler<void(bool)>&& completionHandler)
 {
-    if (active && m_isInterruptedForTesting)
-        return false;
+    if (active && m_isInterruptedForTesting) {
+        completionHandler(false);
+        return;
+    }
 
-/*
-    FIXME: A call to `AudioSession::singleton().tryToSetActive` in the WebProcess ends up in
-    FIXME: `RemoteAudioSession::tryToSetActiveInternal`, which sends sync IPC to the GPU process.
-    FIXME: This is necessary because the return value, whether or not the audio session was activated,
-    FIXME: is used by `MediaSessionManagerInterface::sessionWillBeginPlayback` to know whether to
-    FIXME: allow playback to begin. Sync IPC from the UI process isn't a good idea generally, but
-    FIXME: sync IPC from the UI to the WebProcess and then to the GPU process is a terrible idea,
-    FIXME: so figure out how to restructure the logic to not require it.
-    auto sendResult = sendSync(Messages::RemoteMediaSessionManager::TryToSetAudioSessionActive(active), { });
-    auto [succeeded] = sendResult.takeReplyOr(false);
- */
-    bool succeeded = true;
-    if (succeeded)
-        m_audioConfiguration.isActive = active;
-    return succeeded;
+    RefPtr page = m_process->webPage(m_localPageID);
+    if (!page) {
+        completionHandler(false);
+        return;
+    }
+
+    RefPtr gpuProcess = GPUProcessProxy::singletonIfCreated();
+    if (!gpuProcess) {
+        completionHandler(false);
+        return;
+    }
+
+    auto identifier = protect(page->legacyMainFrameProcess())->coreProcessIdentifier();
+    gpuProcess->tryToSetAudioSessionActiveForProcess(identifier, active, [weakThis = WeakPtr { *this }, completionHandler = WTF::move(completionHandler)](bool isActive) mutable {
+
+        RefPtr protectedThis = weakThis.get();
+        if (!protectedThis) {
+            completionHandler(false);
+            return;
+        }
+
+        if (isActive)
+            protectedThis->m_audioConfiguration.isActive = isActive;
+
+        completionHandler(isActive);
+    });
 }
 
 void RemoteMediaSessionManagerProxy::setPreferredBufferSize(size_t size)

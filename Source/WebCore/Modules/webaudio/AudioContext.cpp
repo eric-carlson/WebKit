@@ -335,8 +335,18 @@ void AudioContext::startRendering()
         if (!protectedThis || !willBegin)
             return;
 
+        if (protectedThis->isStopped() || protectedThis->m_wasSuspendedByScript)
+            return;
+
         protectedThis->lazyInitialize();
-        protect(protectedThis->destination())->startRendering([pendingActivity = protectedThis->makePendingActivity(*protectedThis), protectedThis = WTF::move(protectedThis)](std::optional<Exception>&& exception) {
+        if (!protectedThis->isInitialized())
+            return;
+
+        Ref destination = protectedThis->destination();
+        if (!destination->isInitialized())
+            return;
+
+        destination->startRendering([pendingActivity = protectedThis->makePendingActivity(*protectedThis), protectedThis = WTF::move(protectedThis)](std::optional<Exception>&& exception) {
             if (!exception)
                 protectedThis->setState(State::Running);
         });
