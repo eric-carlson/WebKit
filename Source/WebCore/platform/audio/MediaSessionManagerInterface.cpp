@@ -358,8 +358,12 @@ void MediaSessionManagerInterface::processDidResume()
 #endif
 
 #if USE(AUDIO_SESSION)
-    if (!m_becameActive)
-        maybeActivateAudioSession();
+    if (!m_becameActive && activeAudioSessionRequired()) {
+        AudioSession::singleton().tryToSetActive(true, [weakThis = ThreadSafeWeakPtr { *this }](bool activated) mutable {
+            if (RefPtr protectedThis = weakThis.get())
+                protectedThis->m_becameActive = activated;
+        });
+    }
 #endif
 }
 
@@ -440,6 +444,34 @@ MediaSessionRestrictions MediaSessionManagerInterface::restrictions(PlatformMedi
     return m_restrictions[indexFromMediaType(type)];
 }
 
+void MediaSessionManagerInterface::completeSessionWillBeginPlayback(PlatformMediaSessionInterface& session, bool activatedAudioSession, CompletionHandler<void(bool)>&& completionHandler)
+{
+#if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
+    if (!activatedAudioSession) {
+        ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning false, failed to activate AudioSession");
+        completionHandler(false);
+        return;
+    }
+
+    auto restrictions = this->restrictions(session.mediaType());
+    if (restrictions.contains(MediaSessionRestriction::ConcurrentPlaybackNotPermitted)) {
+        forEachMatchingSession([protectedSession = RefPtr { &session }](auto& otherSession) {
+            if (&otherSession == protectedSession.get())
+                return false;
+
+            if (otherSession.state() != PlatformMediaSession::State::Playing)
+                return false;
+
+            return !otherSession.canPlayConcurrently(*protectedSession);
+        }, [](auto& oneSession) {
+            oneSession.pauseSession();
+        });
+    }
+    ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning true");
+    completionHandler(true);
+#endif
+}
+
 void MediaSessionManagerInterface::sessionWillBeginPlayback(PlatformMediaSessionInterface& session, CompletionHandler<void(bool)>&& completionHandler)
 {
     ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier());
@@ -447,38 +479,23 @@ void MediaSessionManagerInterface::sessionWillBeginPlayback(PlatformMediaSession
     setCurrentSession(session);
 
 #if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
-    auto sessionType = session.mediaType();
-    auto restrictions = this->restrictions(sessionType);
-    if (session.state() == PlatformMediaSession::State::Interrupted && restrictions & MediaSessionRestriction::InterruptedPlaybackNotPermitted) {
-        ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning false because session.state() is Interrupted, and InterruptedPlaybackNotPermitted");
+    auto restrictions = this->restrictions(session.mediaType());
+    if (session.state() == PlatformMediaSession::State::Interrupted && (restrictions & MediaSessionRestriction::InterruptedPlaybackNotPermitted)) {
+        ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning false because session is Interrupted, and InterruptedPlaybackNotPermitted");
         completionHandler(false);
         return;
     }
 
-    if (!maybeActivateAudioSession()) {
-        ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning false, failed to activate AudioSession");
-        completionHandler(false);
-        return;
-    }
-
+    // Clear any stale interruption before starting the async audio session activation.
+    // Doing it here prevents a fresh interruption that arrives during the async window
+    // from being spuriously consumed.
     if (m_currentInterruption)
         endInterruption(PlatformMediaSession::EndInterruptionFlags::NoFlags);
 
-    if (restrictions.contains(MediaSessionRestriction::ConcurrentPlaybackNotPermitted)) {
-        forEachMatchingSession([&session](auto& otherSession) {
-            if (&otherSession == &session)
-                return false;
-
-            if (otherSession.state() != PlatformMediaSession::State::Playing)
-                return false;
-
-            return !otherSession.canPlayConcurrently(session);
-        }, [](auto& oneSession) {
-            oneSession.pauseSession();
-        });
-    }
-    ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning true");
-    completionHandler(true);
+    maybeActivateAudioSession([weakThis = ThreadSafeWeakPtr { *this }, completionHandler = WTF::move(completionHandler), protectedSession = RefPtr { &session }](bool activated) mutable {
+        if (RefPtr protectedThis = weakThis.get())
+            protectedThis->completeSessionWillBeginPlayback(*protectedSession, activated, WTF::move(completionHandler));
+    });
 #else
     completionHandler(false);
 #endif
@@ -536,7 +553,7 @@ void MediaSessionManagerInterface::sessionCanProduceAudioChanged()
     m_alreadyScheduledSessionStatedUpdate = true;
     enqueueTaskOnMainThread([this, protectedThis = Ref { *this }] {
         m_alreadyScheduledSessionStatedUpdate = false;
-        maybeActivateAudioSession();
+        maybeActivateAudioSession([](bool) { });
         updateSessionState();
     });
 }
@@ -693,25 +710,44 @@ void MediaSessionManagerInterface::maybeDeactivateAudioSession()
     if (!m_becameActive || !shouldDeactivateAudioSession())
         return;
 
-    ALWAYS_LOG(LOGIDENTIFIER, "tried to set inactive AudioSession");
+    ALWAYS_LOG(LOGIDENTIFIER, "trying to deactivate AudioSession");
     AudioSession::singleton().tryToSetActive(false);
     m_becameActive = false;
 #endif
 }
 
-bool MediaSessionManagerInterface::maybeActivateAudioSession()
+void MediaSessionManagerInterface::maybeActivateAudioSession(CompletionHandler<void(bool)>&& completionHandler)
 {
 #if USE(AUDIO_SESSION)
     if (!activeAudioSessionRequired()) {
         MEDIASESSIONMANAGERINTERFACE_RELEASE_LOG(MAYBEACTIVATEAUDIOSESSION_ACTIVE_SESSION_NOT_REQUIRED);
-        return true;
+        completionHandler(true);
+        return;
     }
 
-    m_becameActive = AudioSession::singleton().tryToSetActive(true);
-    ALWAYS_LOG(LOGIDENTIFIER, m_becameActive ? "successfully activated" : "failed to activate", " AudioSession");
-    return m_becameActive;
+    m_pendingAudioSessionActivations.append(WTF::move(completionHandler));
+    if (m_pendingAudioSessionActivations.size() > 1) {
+        // Already in flight, completion handler will be called when activation finishes.
+        return;
+    }
+
+    auto logSiteIdentifier = LOGIDENTIFIER;
+    AudioSession::singleton().tryToSetActive(true, [weakThis = ThreadSafeWeakPtr { *this }, logSiteIdentifier = WTF::move(logSiteIdentifier)](bool activated) mutable {
+        RefPtr protectedThis = weakThis.get();
+        if (!protectedThis) {
+            RELEASE_LOG_ERROR(Media, "MediaSessionManagerInterface::maybeActivateAudioSession - NULL interface, returning early");
+            return;
+        }
+
+        protectedThis->m_becameActive = activated;
+        ALWAYS_LOG_WITH_THIS(protectedThis, logSiteIdentifier, activated ? "successfully activated" : "failed to activate", " AudioSession");
+
+        auto callbacks = WTF::move(protectedThis->m_pendingAudioSessionActivations);
+        for (auto& callback : callbacks)
+            callback(activated);
+    });
 #else
-    return true;
+    completionHandler(true);
 #endif
 }
 
@@ -721,7 +757,7 @@ void MediaSessionManagerInterface::scheduleUpdateSessionState()
         return;
 
     m_hasScheduledSessionStateUpdate = true;
-    enqueueTaskOnMainThread([this, protectedThis = Ref { * this }] {
+    enqueueTaskOnMainThread([this, protectedThis = Ref { *this }] {
         updateSessionState();
         m_hasScheduledSessionStateUpdate = false;
     });

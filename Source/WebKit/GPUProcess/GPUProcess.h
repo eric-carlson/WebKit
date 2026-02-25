@@ -119,7 +119,7 @@ public:
     const String& NODELETE mediaKeysStorageDirectory(PAL::SessionID) const;
 #endif
 
-#if ENABLE(GPU_PROCESS) && USE(AUDIO_SESSION)
+#if USE(AUDIO_SESSION)
     RemoteAudioSessionProxyManager& audioSessionManager() const;
 #endif
 
@@ -228,6 +228,9 @@ private:
     void promptForGetDisplayMedia(WebCore::DisplayCapturePromptType, CompletionHandler<void(std::optional<WebCore::CaptureDevice>)>&&);
     void cancelGetDisplayMediaPrompt();
 #endif
+#if USE(AUDIO_SESSION)
+    void tryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier, bool, CompletionHandler<void(bool)>&&);
+#endif
 #if PLATFORM(MAC)
     void setScreenProperties(const WebCore::ScreenProperties&);
     void updateProcessName();
@@ -302,7 +305,7 @@ private:
 #if PLATFORM(MAC)
     String m_uiProcessName;
 #endif
-#if ENABLE(GPU_PROCESS) && USE(AUDIO_SESSION)
+#if USE(AUDIO_SESSION)
     mutable RefPtr<RemoteAudioSessionProxyManager> m_audioSessionManager;
 #endif
 #if ENABLE(WEBXR)

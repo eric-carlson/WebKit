@@ -105,29 +105,42 @@ void RemoteAudioSessionProxy::setPreferredBufferSize(uint64_t size)
     protect(audioSessionManager())->updatePreferredBufferSizeForProcess();
 }
 
-void RemoteAudioSessionProxy::tryToSetActive(bool active, SetActiveCompletion&& completion)
+void RemoteAudioSessionProxy::tryToSetActive(bool active, CompletionHandler<void(bool)>&& completion)
 {
-    Ref manager = audioSessionManager();
-    auto success = manager->tryToSetActiveForProcess(*this, active);
-    bool hasActiveChanged = success && m_active != active;
-    if (success) {
-        m_active = active;
-        if (m_active)
-            m_isInterrupted = false;
-
-#if ENABLE(MEDIA_STREAM) && PLATFORM(IOS_FAMILY)
-        if (m_active)
-            AVAudioSessionCaptureDeviceManager::singleton().setPreferredSpeakerID(m_speakerID);
-#endif
+    if (!m_gpuConnection.get()) {
+        completion(false);
+        return;
     }
 
-    completion(success);
+    protect(audioSessionManager())->tryToSetActiveForProcess(*this, active, [weakThis = WeakPtr { *this }, active, completion = WTF::move(completion)](bool success) mutable {
 
-    if (hasActiveChanged)
-        configurationChanged();
+        RefPtr protectedThis = weakThis.get();
+        if (!protectedThis || !protectedThis->m_gpuConnection.get()) {
+            completion(false);
+            return;
+        }
 
-    manager->updatePresentingProcesses();
-    manager->updateSpatialExperience();
+        bool hasActiveChanged = success && protectedThis->m_active != active;
+        if (success) {
+            protectedThis->m_active = active;
+            if (active)
+                protectedThis->m_isInterrupted = false;
+
+#if ENABLE(MEDIA_STREAM) && PLATFORM(IOS_FAMILY)
+            if (active)
+                AVAudioSessionCaptureDeviceManager::singleton().setPreferredSpeakerID(protectedThis->m_speakerID);
+#endif
+        }
+
+        completion(success);
+
+        if (hasActiveChanged)
+            protectedThis->configurationChanged();
+
+        Ref manager = protectedThis->audioSessionManager();
+        manager->updatePresentingProcesses();
+        manager->updateSpatialExperience();
+    });
 }
 
 void RemoteAudioSessionProxy::setIsPlayingToBluetoothOverride(std::optional<bool>&& value)

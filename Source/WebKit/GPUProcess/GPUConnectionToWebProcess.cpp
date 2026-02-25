@@ -1073,12 +1073,6 @@ bool GPUConnectionToWebProcess::dispatchSyncMessage(IPC::Connection& connection,
         return true;
     }
 #endif
-#if USE(AUDIO_SESSION)
-    if (decoder.messageReceiverName() == Messages::RemoteAudioSessionProxy::messageReceiverName()) {
-        protect(audioSessionProxy())->didReceiveSyncMessage(connection, decoder, replyEncoder);
-        return true;
-    }
-#endif
 #if ENABLE(VIDEO)
     if (decoder.messageReceiverName() == Messages::RemoteAudioVideoRendererProxyManager::messageReceiverName()) {
         protect(remoteAudioVideoRendererProxyManager())->didReceiveSyncMessage(connection, decoder, replyEncoder);

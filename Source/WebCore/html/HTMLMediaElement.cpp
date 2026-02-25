@@ -1330,8 +1330,20 @@ void HTMLMediaElement::resolvePendingPlayPromises(PlayPromiseVector&& pendingPla
 void HTMLMediaElement::scheduleNotifyAboutPlaying()
 {
     queueTaskKeepingObjectAlive(*this, TaskSource::MediaElement, [pendingPlayPromises = WTF::move(m_pendingPlayPromises)](auto& element) mutable {
-        if (!element.isContextStopped())
-            element.notifyAboutPlaying(WTF::move(pendingPlayPromises));
+        if (element.isContextStopped())
+            return;
+
+        // If a seek is in progress, defer the 'playing' notification until after 'seeked'
+        // fires. This ensures we always fire the event in seeking -> seeked -> playing regardless
+        // of whether audio session IPC or the media engine seek finishes first.
+        if (element.seeking()) {
+            ASSERT(element.m_pendingPlayPromises.isEmpty());
+            element.m_pendingPlayPromises = WTF::move(pendingPlayPromises);
+            element.m_hasDeferredPlayingNotification = true;
+            return;
+        }
+
+        element.notifyAboutPlaying(WTF::move(pendingPlayPromises));
     });
 }
 
@@ -1695,7 +1707,6 @@ void HTMLMediaElement::selectMediaResource()
         } else if (element.hasAttributeWithoutSynchronization(srcAttr)) {
             //    Otherwise, if the media element has no assigned media provider object but has a src attribute, then let mode be attribute.
             mode = Attribute;
-            ASSERT(element.m_player);
             if (!element.m_player) {
                 HTMLMEDIAELEMENT_RELEASE_LOG_WITH_THIS(&element, SELECTMEDIARESOURCE_HAS_SRCATTR_PLAYER_NOT_CREATED);
                 return;
@@ -4098,6 +4109,11 @@ void HTMLMediaElement::finishSeek()
     // 17 - Queue a task to fire a simple event named seeked at the element.
     scheduleEvent(eventNames().seekedEvent);
 
+    if (m_hasDeferredPlayingNotification) {
+        m_hasDeferredPlayingNotification = false;
+        scheduleNotifyAboutPlaying();
+    }
+
     if (protect(document())->quirks().needsCanPlayAfterSeekedQuirk() && m_readyState > HAVE_CURRENT_DATA)
         scheduleEvent(eventNames().canplayEvent);
 
@@ -4482,56 +4498,6 @@ void HTMLMediaElement::play()
     playInternal();
 }
 
-void HTMLMediaElement::completePlayInternal()
-{
-    // 4.8.10.9. Playing the media resource
-    if (!m_player || m_networkState == NETWORK_EMPTY)
-        selectMediaResource();
-
-    if (endedPlayback())
-        seekInternal(MediaTime::zeroTime());
-
-    if (RefPtr mediaController = m_mediaController)
-        mediaController->bringElementUpToSpeed(*this);
-
-    if (m_paused) {
-        setPaused(false);
-        setShowPosterFlag(false);
-        invalidateOfficialPlaybackPosition();
-
-        // This avoids the first timeUpdated event after playback starts, when currentTime is still
-        // the same as it was when the video was paused (and the time hasn't changed yet).
-        m_lastTimeUpdateEventMovieTime = currentMediaTime();
-        m_playbackStartedTime = m_lastTimeUpdateEventMovieTime.toDouble();
-
-        scheduleEvent(eventNames().playEvent);
-
-        // If the media element's readyState attribute has the value HAVE_NOTHING, HAVE_METADATA, or HAVE_CURRENT_DATA,
-        // queue a media element task given the media element to fire an event named waiting at the element.
-        // Otherwise, the media element's readyState attribute has the value HAVE_FUTURE_DATA or HAVE_ENOUGH_DATA:
-        // notify about playing for the element.
-        if (m_readyState <= HAVE_CURRENT_DATA)
-            scheduleEvent(eventNames().waitingEvent);
-        else
-            scheduleNotifyAboutPlaying();
-    } else if (m_readyState >= HAVE_FUTURE_DATA)
-        scheduleResolvePendingPlayPromises();
-
-    if (processingUserGestureForMedia()) {
-        if (m_autoplayEventPlaybackState == AutoplayEventPlaybackState::PreventedAutoplay) {
-            handleAutoplayEvent(AutoplayEvent::DidPlayMediaWithUserGesture);
-            setAutoplayEventPlaybackState(AutoplayEventPlaybackState::None);
-        } else
-            setAutoplayEventPlaybackState(AutoplayEventPlaybackState::StartedWithUserGesture);
-    } else
-        setAutoplayEventPlaybackState(AutoplayEventPlaybackState::StartedWithoutUserGesture);
-
-    m_autoplaying = false;
-    updatePlayState();
-
-    ImageOverlay::removeOverlaySoonIfNeeded(*this);
-}
-
 void HTMLMediaElement::playInternal()
 {
     HTMLMEDIAELEMENT_RELEASE_LOG(PLAYINTERNAL);
@@ -4550,20 +4516,92 @@ void HTMLMediaElement::playInternal()
     Ref mediaSession = this->mediaSession();
     mediaSession->setActive(true);
 
-    CompletionHandler<void (bool)> canBeginPlaybackCompletion = [weakThis = WeakPtr { *this }, logSiteIdentifier = WTF::move(logSiteIdentifier)](bool canBegin) {
+    // 4.8.10.9. Playing the media resource
+    // These steps are spec-observable and must happen synchronously when play() is called,
+    // before any asynchronous steps such as asyncronous audio session activation.
+    if (!m_player || m_networkState == NETWORK_EMPTY)
+        selectMediaResource();
+
+    if (endedPlayback())
+        seekInternal(MediaTime::zeroTime());
+
+    if (RefPtr mediaController = m_mediaController)
+        mediaController->bringElementUpToSpeed(*this);
+
+    // Track whether we need to dispatch notifyAboutPlaying in the async clientWillBeginPlayback
+    // completion. This is true when m_paused is true (the element transitions from paused to
+    // playing) and readyState is sufficient. Must be captured before setPaused(false) below.
+    bool shouldNotifyAboutPlaying = m_paused && m_readyState > HAVE_CURRENT_DATA;
+
+    if (m_paused) {
+        setPaused(false);
+        setPlaying(true);
+        setShowPosterFlag(false);
+        invalidateOfficialPlaybackPosition();
+
+        // This avoids the first timeUpdated event after playback starts, when currentTime is still
+        // the same as it was when the video was paused (and the time hasn't changed yet).
+        m_lastTimeUpdateEventMovieTime = currentMediaTime();
+        m_playbackStartedTime = m_lastTimeUpdateEventMovieTime.toDouble();
+
+        scheduleEvent(eventNames().playEvent);
+
+        // If the media element's readyState attribute has the value HAVE_NOTHING, HAVE_METADATA, or HAVE_CURRENT_DATA,
+        // queue a media element task given the media element to fire an event named waiting at the element.
+        // Otherwise (HAVE_FUTURE_DATA or HAVE_ENOUGH_DATA), scheduleNotifyAboutPlaying() is deferred to the
+        // clientWillBeginPlayback completion below. This ensures the 'playing' event and play promise
+        // resolution fire after:
+        //   (a) setState(Playing) runs (so beginInterruption() captures Playing, not Paused, in m_stateToRestore), and
+        //   (b) completeSessionWillBeginPlayback() enforces concurrent playback (so competing sessions are
+        //       paused before 'playing' fires and play promises are resolved).
+        if (m_readyState <= HAVE_CURRENT_DATA)
+            scheduleEvent(eventNames().waitingEvent);
+    } else if (m_readyState >= HAVE_FUTURE_DATA)
+        scheduleResolvePendingPlayPromises();
+
+    if (processingUserGestureForMedia()) {
+        if (m_autoplayEventPlaybackState == AutoplayEventPlaybackState::PreventedAutoplay) {
+            handleAutoplayEvent(AutoplayEvent::DidPlayMediaWithUserGesture);
+            setAutoplayEventPlaybackState(AutoplayEventPlaybackState::None);
+        } else
+            setAutoplayEventPlaybackState(AutoplayEventPlaybackState::StartedWithUserGesture);
+    } else
+        setAutoplayEventPlaybackState(AutoplayEventPlaybackState::StartedWithoutUserGesture);
+
+    m_autoplaying = false;
+
+    // If this element requires fullscreen for video playback, initiate the fullscreen transition
+    // synchronously before the async audio session activation, so that it is in-progress by the
+    // time the 'playing' event fires.
+    if (m_player && potentiallyPlaying() && mediaSession->requiresFullscreenForVideoPlayback() && !m_waitingToEnterFullscreen && !isFullscreen())
+        enterFullscreen();
+
+    RefPtr gestureToken = UserGestureIndicator::currentUserGesture();
+    mediaSession->clientWillBeginPlayback([weakThis = WeakPtr { *this }, logSiteIdentifier = WTF::move(logSiteIdentifier), gestureToken = WTF::move(gestureToken), shouldNotifyAboutPlaying](bool canBegin) mutable {
         RefPtr protectedThis = weakThis.get();
         if (!protectedThis)
             return;
 
         if (!canBegin) {
-            ALWAYS_LOG_WITH_THIS(protectedThis, logSiteIdentifier, "returning because of interruption");
+            ALWAYS_LOG_WITH_THIS(protectedThis, logSiteIdentifier, "clientWillBeginPlayback failed");
+
+            // Audio session activation failed after we already set paused = false synchronously.
+            // Roll back by pausing, which fires the pause event and rejects pending play promises.
+            protectedThis->pauseInternal();
             return;
         }
 
-        protectedThis->completePlayInternal();
-    };
+        UserGestureIndicator gestureIndicator(WTF::move(gestureToken));
 
-    mediaSession->clientWillBeginPlayback(WTF::move(canBeginPlaybackCompletion));
+        // Dispatch the 'playing' event and resolve play promises here, after setState(Playing) and
+        // concurrent playback enforcement have run. This preserves the ordering guarantee that
+        // competing sessions are paused before 'playing' fires, and ensures state() == Playing when
+        // beginInterruption() may run in response to the 'playing' event handler.
+        if (shouldNotifyAboutPlaying)
+            protectedThis->scheduleNotifyAboutPlaying();
+        protectedThis->updatePlayState();
+        ImageOverlay::removeOverlaySoonIfNeeded(*protectedThis);
+    });
 }
 
 void HTMLMediaElement::pause()
@@ -4616,6 +4654,8 @@ void HTMLMediaElement::pauseInternal()
     }
 
     m_autoplaying = false;
+
+    m_hasDeferredPlayingNotification = false;
 
     if (processingUserGestureForMedia())
         userDidInterfereWithAutoplay();

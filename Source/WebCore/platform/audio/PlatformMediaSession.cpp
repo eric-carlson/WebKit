@@ -274,13 +274,14 @@ void PlatformMediaSession::clientWillBeginPlayback(CompletionHandler<void(bool)>
 
     ALWAYS_LOG(LOGIDENTIFIER, "state = ", m_state);
 
-    SetForScope preparingToPlay(m_preparingToPlay, true);
-
     RefPtr manager = sessionManager();
     if (!manager) {
         completionHandler(false);
         return;
     }
+
+    m_preparingToPlay = true;
+    m_stateToRestore = State::Playing;
 
     manager->sessionWillBeginPlayback(*this, [weakThis = WeakPtr { *this }, completionHandler = WTF::move(completionHandler)](bool canBegin) mutable {
         RefPtr protectedThis = weakThis.get();
@@ -289,15 +290,35 @@ void PlatformMediaSession::clientWillBeginPlayback(CompletionHandler<void(bool)>
             return;
         }
 
+        protectedThis->m_preparingToPlay = false;
+
         if (!canBegin) {
             if (protectedThis->state() == State::Interrupted)
                 protectedThis->m_stateToRestore = State::Playing;
+            else
+                protectedThis->setState(State::Paused);
             completionHandler(false);
             return;
         }
 
-        protectedThis->m_stateToRestore = State::Playing;
-        protectedThis->setState(State::Playing);
+        // Transition to Playing before notifying the caller, so that clients
+        // observing state() (e.g. mediaUsageState) see Playing by the time the
+        // 'playing' event fires. This is done here (after maybeActivateAudioSession
+        // completes) rather than synchronously before the manager call, to avoid
+        // triggering an AVAudioSession category-change interruption on iOS before
+        // the audio session is active. Skip if already Playing (re-entrant call
+        // from updatePlayState). If Interrupted, an interruption arrived during
+        // the async audio session activation window (or play() was called while
+        // already interrupted): ensure m_stateToRestore == Playing so that
+        // endInterruption(MayResumePlaying) will correctly resume. Also call
+        // setState(Playing) so that potentiallyPlaying() returns true and
+        // updatePlayState() can start the player (e.g. audio played while the
+        // page is hidden but not restricted from background playback).
+        if (protectedThis->state() == State::Interrupted)
+            protectedThis->m_stateToRestore = State::Playing;
+        if (protectedThis->state() != State::Playing && protectedThis->state() != State::Paused)
+            protectedThis->setState(State::Playing);
+
         completionHandler(true);
     });
 }
@@ -377,7 +398,7 @@ bool PlatformMediaSession::activeAudioSessionRequired() const
 {
     if (mediaType() == PlatformMediaSession::MediaType::None)
         return false;
-    if (state() != PlatformMediaSession::State::Playing)
+    if (state() != PlatformMediaSession::State::Playing && !preparingToPlay())
         return false;
     return canProduceAudio();
 }

@@ -121,16 +121,25 @@ void RemoteAudioSession::setPreferredBufferSize(size_t size)
     protect(ensureConnection())->send(Messages::RemoteAudioSessionProxy::SetPreferredBufferSize(size), { });
 }
 
-bool RemoteAudioSession::tryToSetActiveInternal(bool active)
+void RemoteAudioSession::tryToSetActiveInternal(bool active, CompletionHandler<void(bool)>&& completionHandler)
 {
+    // If a testing interruption is in effect and activation is requested, end the testing
+    // interruption implicitly. This mirrors real AVAudioSession behavior where initiating
+    // playback can implicitly end an interruption.
     if (active && m_isInterruptedForTesting)
-        return false;
+        endInterruptionForTesting();
 
-    auto sendResult = protect(ensureConnection())->sendSync(Messages::RemoteAudioSessionProxy::TryToSetActive(active), { });
-    auto [succeeded] = sendResult.takeReplyOr(false);
-    if (succeeded)
-        configuration().isActive = active;
-    return succeeded;
+    // Optimistically update the local active state before the IPC reply arrives, so that
+    // isActive() returns the expected value synchronously (e.g. after processWillSuspend()).
+    // The previous state is saved so it can be restored if the GPU process reports failure.
+    bool previousIsActive = configuration().isActive;
+    configuration().isActive = active;
+
+    protect(ensureConnection())->sendWithAsyncReply(Messages::RemoteAudioSessionProxy::TryToSetActive(active), [protectedThis = Ref { *this }, this, previousIsActive, completionHandler = WTF::move(completionHandler)](bool succeeded) mutable {
+        if (!succeeded)
+            configuration().isActive = previousIsActive;
+        completionHandler(succeeded);
+    });
 }
 
 void RemoteAudioSession::addConfigurationChangeObserver(AudioSessionConfigurationChangeObserver& observer)
@@ -166,6 +175,9 @@ void RemoteAudioSession::configurationChanged(RemoteAudioSessionConfiguration&& 
     bool sampleRateChanged = !m_configuration || configuration.sampleRate != (*m_configuration).sampleRate;
     bool isActiveChanged = !m_configuration || configuration.isActive != (*m_configuration).isActive;
     bool routingContextUIDChanged = !m_configuration || configuration.routingContextUID != (*m_configuration).routingContextUID;
+
+    if (m_configuration)
+        configuration.preferredBufferSize = m_configuration->preferredBufferSize;
 
     m_configuration = WTF::move(configuration);
 

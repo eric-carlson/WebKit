@@ -74,6 +74,10 @@ messages -> GPUProcess : AuxiliaryProcess {
     CancelGetDisplayMediaPrompt()
 #endif
 
+#if USE(AUDIO_SESSION)
+    TryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier processID, bool active) -> (bool successful)
+#endif
+
 #if PLATFORM(MAC)
     OpenDirectoryCacheInvalidated(WebKit::SandboxExtensionHandle handle)
 #endif

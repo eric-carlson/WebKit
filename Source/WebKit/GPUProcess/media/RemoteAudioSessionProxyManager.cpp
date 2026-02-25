@@ -205,7 +205,19 @@ static void providePresentingApplicationPID(RemoteAudioSessionProxy& proxy)
 }
 #endif
 
-bool RemoteAudioSessionProxyManager::tryToSetActiveForProcess(RemoteAudioSessionProxy& proxy, bool active)
+void RemoteAudioSessionProxyManager::tryToSetActiveForProcess(WebCore::ProcessIdentifier identifier, bool active, CompletionHandler<void(bool)>&& completionHandler)
+{
+    for (Ref proxy : m_proxies) {
+        if (proxy->processIdentifier() == identifier) {
+            tryToSetActiveForProcess(proxy.get(), active, WTF::move(completionHandler));
+            return;
+        }
+    }
+
+    completionHandler(false);
+}
+
+void RemoteAudioSessionProxyManager::tryToSetActiveForProcess(RemoteAudioSessionProxy& proxy, bool active, CompletionHandler<void(bool)>&& completionHandler)
 {
     ASSERT(m_proxies.contains(proxy));
 
@@ -213,13 +225,14 @@ bool RemoteAudioSessionProxyManager::tryToSetActiveForProcess(RemoteAudioSession
         if (hasOtherActiveProxyThan(proxy)) {
             // This proxy wants to de-activate, but other proxies are still
             // active. No-op, and return deactivation was sucessful.
-            return true;
+            completionHandler(true);
+            return;
         }
 
         // This proxy wants to de-activate, and is the last remaining active
-        // proxy. Deactivate the session, and return whether that deactivation
-        // was sucessful.
-        return AudioSession::singleton().tryToSetActive(false);
+        // proxy, deactivate the session.
+        AudioSession::singleton().tryToSetActive(false, WTF::move(completionHandler));
+        return;
     }
 
 #if PLATFORM(IOS_FAMILY)
@@ -227,16 +240,18 @@ bool RemoteAudioSessionProxyManager::tryToSetActiveForProcess(RemoteAudioSession
 #endif
 
     if (!hasActiveNotInterruptedProxy()) {
-        // This proxy and only this proxy wants to become active. Activate
-        // the session, and return whether that activation was successful.
-        return AudioSession::singleton().tryToSetActive(active);
+        // This proxy and only this proxy wants to become active. Activate the session
+        AudioSession::singleton().tryToSetActive(active, WTF::move(completionHandler));
+        return;
     }
 
     // If this proxy is Ambient, and the session is already active, this
     // proxy will mix with the active proxies. No-op, and return activation
     // was sucessful.
-    if (categoryCanMixWithOthers(proxy.category()))
-        return true;
+    if (categoryCanMixWithOthers(proxy.category())) {
+        completionHandler(true);
+        return;
+    }
 
 #if PLATFORM(IOS_FAMILY)
     // Otherwise, this proxy wants to become active, but there are other
@@ -255,7 +270,7 @@ bool RemoteAudioSessionProxyManager::tryToSetActiveForProcess(RemoteAudioSession
         otherProxy->beginInterruption();
     }
 #endif
-    return true;
+    completionHandler(true);
 }
 
 void RemoteAudioSessionProxyManager::updatePresentingProcesses()

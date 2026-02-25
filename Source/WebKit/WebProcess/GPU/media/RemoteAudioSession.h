@@ -83,7 +83,7 @@ private:
     size_t maximumNumberOfOutputChannels() const final { return configuration().maximumNumberOfOutputChannels; }
     size_t outputLatency() const final { return configuration().outputLatency; }
 
-    bool tryToSetActiveInternal(bool) final;
+    void tryToSetActiveInternal(bool, CompletionHandler<void(bool)>&&) final;
 
     size_t preferredBufferSize() const final { return configuration().preferredBufferSize; }
     void setPreferredBufferSize(size_t) final;

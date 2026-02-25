@@ -534,8 +534,14 @@ void GPUProcess::cancelGetDisplayMediaPrompt()
 {
     WebCore::ScreenCaptureKitSharingSessionManager::singleton().cancelGetDisplayMediaPrompt();
 }
-
 #endif // HAVE(SCREEN_CAPTURE_KIT)
+
+#if USE(AUDIO_SESSION)
+void GPUProcess::tryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier identifier, bool active, CompletionHandler<void(bool)>&& completionHandler)
+{
+    protect(audioSessionManager())->tryToSetActiveForProcess(identifier, active, WTF::move(completionHandler));
+}
+#endif
 
 void GPUProcess::addSession(PAL::SessionID sessionID, GPUProcessSessionParameters&& parameters)
 {
@@ -592,7 +598,7 @@ WebCore::NowPlayingManager& GPUProcess::nowPlayingManager()
     return *m_nowPlayingManager;
 }
 
-#if ENABLE(GPU_PROCESS) && USE(AUDIO_SESSION)
+#if USE(AUDIO_SESSION)
 RemoteAudioSessionProxyManager& GPUProcess::audioSessionManager() const
 {
     if (!m_audioSessionManager)

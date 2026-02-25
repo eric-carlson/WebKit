@@ -82,7 +82,6 @@ public:
 
     // IPC::MessageReceiver
     void didReceiveMessage(IPC::Connection&, IPC::Decoder&) final;
-    void didReceiveSyncMessage(IPC::Connection&, IPC::Decoder&, UniqueRef<IPC::Encoder>&) final;
 
     RefPtr<GPUConnectionToWebProcess> gpuConnectionToWebProcess() const;
     std::optional<SharedPreferencesForWebProcess> sharedPreferencesForWebProcess() const;
@@ -97,8 +96,7 @@ private:
     // Messages
     void setCategory(WebCore::AudioSession::CategoryType, WebCore::AudioSession::Mode, WebCore::RouteSharingPolicy);
     void setPreferredBufferSize(uint64_t);
-    using SetActiveCompletion = CompletionHandler<void(bool)>;
-    void tryToSetActive(bool, SetActiveCompletion&&);
+    void tryToSetActive(bool, CompletionHandler<void(bool)>&&);
     void setIsPlayingToBluetoothOverride(std::optional<bool>&& value);
     void triggerBeginInterruptionForTesting();
     void triggerEndInterruptionForTesting();

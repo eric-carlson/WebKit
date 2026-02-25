@@ -505,6 +505,13 @@ void GPUProcessProxy::cancelGetDisplayMediaPrompt()
 }
 #endif
 
+#if USE(AUDIO_SESSION)
+void GPUProcessProxy::tryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier identifier, bool active, CompletionHandler<void(bool)>&& completionHandler)
+{
+    sendWithAsyncReply(Messages::GPUProcess::TryToSetAudioSessionActiveForProcess(identifier, active), WTF::move(completionHandler));
+}
+#endif
+
 void GPUProcessProxy::getLaunchOptions(ProcessLauncher::LaunchOptions& launchOptions)
 {
     launchOptions.processType = ProcessLauncher::ProcessType::GPU;

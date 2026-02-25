@@ -126,7 +126,7 @@ public:
     virtual size_t numberOfOutputChannels() const;
     virtual size_t maximumNumberOfOutputChannels() const;
 
-    bool tryToSetActive(bool);
+    void tryToSetActive(bool, CompletionHandler<void(bool)>&& = [](bool) { });
 
     virtual size_t preferredBufferSize() const;
     virtual void setPreferredBufferSize(size_t);
@@ -176,7 +176,7 @@ protected:
     friend class NeverDestroyed<AudioSession>;
     AudioSession();
 
-    virtual bool tryToSetActiveInternal(bool);
+    virtual void tryToSetActiveInternal(bool, CompletionHandler<void(bool)>&&);
     void activeStateChanged();
 
     Logger& logger();
