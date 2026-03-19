@@ -132,7 +132,7 @@ public:
 #endif
         Ref session = AudioSession::singleton();
         session->setCategory(AudioSession::CategoryType::PlayAndRecord, AudioSession::Mode::VideoChat, RouteSharingPolicy::Default);
-        session->tryToSetActive(true);
+        session->tryToSetActive(true)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
     }
 
     void start()

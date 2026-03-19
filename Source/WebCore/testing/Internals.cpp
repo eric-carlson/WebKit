@@ -752,7 +752,7 @@ void Internals::resetToConsistentState(Page& page)
 
 #if USE(AUDIO_SESSION)
     AudioSession::singleton().setCategoryOverride(AudioSessionCategory::None);
-    AudioSession::singleton().tryToSetActive(false);
+    AudioSession::singleton().tryToSetActive(false)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
     AudioSession::singleton().endInterruptionForTesting();
 #endif
 

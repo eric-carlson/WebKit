@@ -41,6 +41,7 @@
 #include <WebCore/PlatformMediaSession.h>
 #include <algorithm>
 #include <ranges>
+#include <wtf/RunLoop.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebKit {
@@ -244,7 +245,7 @@ void RemoteMediaSessionManager::setAudioSessionPreferredBufferSize(uint64_t pref
 
 void RemoteMediaSessionManager::tryToSetAudioSessionActive(bool active)
 {
-    WebCore::AudioSession::singleton().tryToSetActive(active);
+    WebCore::AudioSession::singleton().tryToSetActive(active)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
 }
 #endif
 

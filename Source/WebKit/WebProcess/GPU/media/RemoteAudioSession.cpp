@@ -34,6 +34,7 @@
 #include "RemoteAudioSessionProxyMessages.h"
 #include "WebProcess.h"
 #include <WebCore/PlatformMediaSessionManager.h>
+#include <wtf/RunLoop.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebKit {
@@ -121,16 +122,23 @@ void RemoteAudioSession::setPreferredBufferSize(size_t size)
     protect(ensureConnection())->send(Messages::RemoteAudioSessionProxy::SetPreferredBufferSize(size), { });
 }
 
-bool RemoteAudioSession::tryToSetActiveInternal(bool active)
+Ref<AudioSession::SetActivePromise> RemoteAudioSession::tryToSetActiveInternal(bool active)
 {
     if (active && m_isInterruptedForTesting)
-        return false;
+        return SetActivePromise::createAndReject();
 
-    auto sendResult = protect(ensureConnection())->sendSync(Messages::RemoteAudioSessionProxy::TryToSetActive(active), { });
-    auto [succeeded] = sendResult.takeReplyOr(false);
-    if (succeeded)
-        configuration().isActive = active;
-    return succeeded;
+    return protect(ensureConnection())->sendWithPromisedReply(
+        Messages::RemoteAudioSessionProxy::TryToSetActive(active)
+    )->whenSettled(RunLoop::mainSingleton(),
+        [this, protectedThis = Ref { *this }, active](auto&& result) mutable -> Ref<SetActivePromise> {
+            if (!result)
+                return SetActivePromise::createAndReject();
+            auto succeeded = *result;
+            if (!succeeded)
+                return SetActivePromise::createAndReject();
+            configuration().isActive = active;
+            return SetActivePromise::createAndResolve();
+        });
 }
 
 void RemoteAudioSession::addConfigurationChangeObserver(AudioSessionConfigurationChangeObserver& observer)

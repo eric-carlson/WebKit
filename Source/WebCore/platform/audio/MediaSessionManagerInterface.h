@@ -34,6 +34,7 @@
 #include <wtf/AggregateLogger.h>
 #include <wtf/CancellableTask.h>
 #include <wtf/LoggerHelper.h>
+#include <wtf/NativePromise.h>
 #include <wtf/ProcessID.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/ThreadSafeWeakPtr.h>
@@ -173,7 +174,7 @@ protected:
     WeakPtr<PlatformMediaSessionInterface> firstSessionMatching(NOESCAPE const Function<bool(const PlatformMediaSessionInterface&)>&) const;
 
     void maybeDeactivateAudioSession();
-    bool maybeActivateAudioSession();
+    Ref<GenericPromise> maybeActivateAudioSession();
 
     void nowPlayingMetadataChanged(const NowPlayingMetadata&);
     void enqueueTaskOnMainThread(Function<void()>&&);
@@ -223,9 +224,7 @@ private:
     bool m_alreadyScheduledSessionStatedUpdate { false };
     bool m_hasScheduledSessionStateUpdate { false };
     mutable bool m_isApplicationInBackground { false };
-#if USE(AUDIO_SESSION)
     bool m_becameActive { false };
-#endif
 };
 
 #if !RELEASE_LOG_DISABLED

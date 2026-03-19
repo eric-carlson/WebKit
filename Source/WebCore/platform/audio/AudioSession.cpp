@@ -31,7 +31,9 @@
 #include "Logging.h"
 #include "NotImplemented.h"
 #include <wtf/LoggerHelper.h>
+#include <wtf/NativePromise.h>
 #include <wtf/NeverDestroyed.h>
+#include <wtf/RunLoop.h>
 #include <wtf/TZoneMallocInlines.h>
 
 #if PLATFORM(MAC)
@@ -129,27 +131,27 @@ void AudioSession::addAudioSessionChangedObserver(const ChangedObserver& observe
         observer(Ref { *sharedAudioSession() });
 }
 
-bool AudioSession::tryToSetActive(bool active)
+Ref<AudioSession::SetActivePromise> AudioSession::tryToSetActive(bool active)
 {
     bool previousIsActive = isActive();
-    if (!tryToSetActiveInternal(active))
-        return false;
-
-    ALWAYS_LOG(LOGIDENTIFIER, "is active = ", active, ", previousIsActive = ", previousIsActive);
-
-    bool hasActiveChanged = previousIsActive != isActive();
-    m_active = active;
-    if (m_isInterrupted && m_active) {
-        callOnMainThread([hasActiveChanged] {
-            if (singleton().m_isInterrupted && singleton().m_active)
-                singleton().endInterruption(MayResume::Yes);
-            if (hasActiveChanged)
-                singleton().activeStateChanged();
+    return tryToSetActiveInternal(active)->whenSettled(RunLoop::mainSingleton(),
+        [this, protectedThis = Ref { *this }, active, previousIsActive](auto&& result) mutable -> Ref<SetActivePromise> {
+            if (!result)
+                return SetActivePromise::createAndReject();
+            ALWAYS_LOG(LOGIDENTIFIER, "is active = ", active, ", previousIsActive = ", previousIsActive);
+            bool hasActiveChanged = previousIsActive != isActive();
+            m_active = active;
+            if (m_isInterrupted && m_active) {
+                callOnMainThread([hasActiveChanged, protectedThis] {
+                    if (protectedThis->m_isInterrupted && protectedThis->m_active)
+                        protectedThis->endInterruption(MayResume::Yes);
+                    if (hasActiveChanged)
+                        protectedThis->activeStateChanged();
+                });
+            } else if (hasActiveChanged)
+                activeStateChanged();
+            return SetActivePromise::createAndResolve();
         });
-    } else if (hasActiveChanged)
-        activeStateChanged();
-
-    return true;
 }
 
 static WeakHashSet<AudioSessionInterruptionObserver>& NODELETE audioSessionInterruptionObserversSingleton()
@@ -257,10 +259,10 @@ size_t AudioSession::maximumNumberOfOutputChannels() const
     return 0;
 }
 
-bool AudioSession::tryToSetActiveInternal(bool)
+Ref<AudioSession::SetActivePromise> AudioSession::tryToSetActiveInternal(bool)
 {
     notImplemented();
-    return true;
+    return SetActivePromise::createAndResolve();
 }
 
 size_t AudioSession::preferredBufferSize() const

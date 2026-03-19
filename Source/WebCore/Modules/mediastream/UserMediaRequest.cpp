@@ -59,6 +59,7 @@
 #include "WindowEventLoop.h"
 #include <JavaScriptCore/ConsoleTypes.h>
 #include <algorithm>
+#include <wtf/RunLoop.h>
 #include <wtf/Scope.h>
 
 namespace WebCore {
@@ -206,7 +207,7 @@ void UserMediaRequest::allow(CaptureDevice&& audioDevice, CaptureDevice&& videoD
 
             if (RefPtr audioTrack = stream->getFirstAudioTrack()) {
 #if USE(AUDIO_SESSION)
-                AudioSession::singleton().tryToSetActive(true);
+                AudioSession::singleton().tryToSetActive(true)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
 #endif
                 if (std::holds_alternative<MediaTrackConstraints>(protectedThis->m_audioConstraints))
                     audioTrack->setConstraints(std::get<MediaTrackConstraints>(WTF::move(protectedThis->m_audioConstraints)));
