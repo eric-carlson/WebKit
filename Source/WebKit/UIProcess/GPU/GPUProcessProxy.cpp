@@ -686,7 +686,6 @@ void GPUProcessProxy::webXRPromptAccepted(std::optional<WebCore::ProcessIdentity
 }
 #endif
 
-
 void GPUProcessProxy::updateProcessAssertion()
 {
     bool hasAnyForegroundWebProcesses = false;
@@ -879,6 +878,31 @@ void GPUProcessProxy::stopMonitoringCaptureDeviceRotation(PageIdentifier pageID,
 void GPUProcessProxy::rotationAngleForCaptureDeviceChanged(const String& persistentId, WebCore::VideoFrameRotation rotation)
 {
     send(Messages::GPUProcess::RotationAngleForCaptureDeviceChanged(persistentId, rotation), 0);
+}
+
+void GPUProcessProxy::startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier pageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, CompletionHandler<void(WebCore::HostingContext)>&& completionHandler)
+{
+    // Without the camera sandbox extension the GPU process cannot even resolve an
+    // AVCaptureDevice, so [AVCaptureDevice deviceWithUniqueID:] returns nil and source
+    // creation fails.
+    // FIXME: updateSandboxAccess is a one-way latch and nothing revokes these extensions, so a
+    // prompt the user denies still leaves the GPU process holding them for its lifetime. Previously
+    // they were only granted after a grant, by updateCaptureAccess.
+    updateSandboxAccess(!!audioDevice, !!videoDevice, false);
+
+    sendWithAsyncReply(Messages::GPUProcess::StartCapturePreview(WTF::move(videoDevice), WTF::move(audioDevice), pageIdentifier, previewSize, orientation), WTF::move(completionHandler));
+}
+
+void GPUProcessProxy::capturePreviewAudioLevelChanged(float level)
+{
+    if (m_capturePreviewAudioLevelHandler)
+        m_capturePreviewAudioLevelHandler(level);
+}
+
+void GPUProcessProxy::stopCapturePreview(WebCore::PageIdentifier pageIdentifier)
+{
+    m_capturePreviewAudioLevelHandler = nullptr;
+    send(Messages::GPUProcess::StopCapturePreview(pageIdentifier), 0);
 }
 
 void GPUProcessProxy::microphoneMuteStatusChanged(bool isMuting)

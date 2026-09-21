@@ -289,6 +289,10 @@ void AudioSessionIOS::setCategory(CategoryType newCategory, Mode newMode, RouteS
         ALWAYS_LOG(identifier, newCategory, ", mode = ", newMode);
         NSError *error = nil;
         [session setCategory:categoryString mode:modeString routeSharingPolicy:static_cast<AVAudioSessionRouteSharingPolicy>(policy) options:options error:&error];
+        // Reported rather than only asserted: a failure here leaves the category as it was, and
+        // anything that reads it back to decide whether it may record then silently fails.
+        if (error)
+            RELEASE_LOG_ERROR(Media, "AudioSessionIOS::setCategory failed with error: %@", error.localizedDescription);
 #if !PLATFORM(IOS_FAMILY_SIMULATOR) && !PLATFORM(MACCATALYST)
         ASSERT(!error);
 #endif

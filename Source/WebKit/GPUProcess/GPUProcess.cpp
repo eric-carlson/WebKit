@@ -72,6 +72,10 @@
 #include <WebCore/MockRealtimeMediaSourceCenter.h>
 #endif
 
+#if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
+#include "CapturePreviewManager.h"
+#endif
+
 #if PLATFORM(COCOA)
 #include "ArgumentCodersCocoa.h"
 #include <WebCore/CoreAudioCaptureUnit.h>
@@ -621,6 +625,14 @@ void GPUProcess::setMockCaptureDevicesEnabled(bool isEnabled)
 void GPUProcess::setOrientationForMediaCapture(WebCore::IntDegrees orientation)
 {
     m_orientation = orientation;
+
+#if PLATFORM(COCOA)
+    // A preview is driven by the UI process and so belongs to no web process connection
+    // and needs to be updated separately.
+    if (m_capturePreviewManager)
+        m_capturePreviewManager->setOrientation(orientation);
+#endif
+
     for (auto& connection : m_webProcessConnections.values())
         connection->setOrientationForMediaCapture(orientation);
 }
@@ -637,9 +649,69 @@ void GPUProcess::enableMicrophoneMuteStatusAPI()
 
 void GPUProcess::rotationAngleForCaptureDeviceChanged(const String& persistentId, WebCore::VideoFrameRotation rotation)
 {
+#if PLATFORM(COCOA)
+    if (m_capturePreviewManager)
+        m_capturePreviewManager->rotationAngleForCaptureDeviceChanged(persistentId, rotation);
+#endif
     for (auto& connection : m_webProcessConnections.values())
         connection->rotationAngleForCaptureDeviceChanged(persistentId, rotation);
 }
+
+#if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
+void GPUProcess::startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier pageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, CompletionHandler<void(WebCore::HostingContext)>&& completionHandler)
+{
+    ensureAVCaptureServerConnection();
+
+#if ENABLE(APP_PRIVACY_REPORT) && !PLATFORM(MACCATALYST)
+    // A preview is attributed to the application, not to the page: the page has not been granted
+    // access at this point, so its origin must not appear as the source of the capture.
+    bool hasCaptureIdentity = WebCore::RealtimeMediaSourceCenter::singleton().hasIdentity() || setCapturePreviewTCCIdentity();
+
+    // Fail immediately if we don't have a capture identity as -[AVCaptureSession init] will throw.
+    if (!hasCaptureIdentity && videoDevice) {
+        RELEASE_LOG_ERROR(WebRTC, "GPUProcess::startCapturePreview: no capture identity, refusing to preview");
+        return completionHandler({ });
+    }
+#endif
+
+    // FIXME: The manager is per process while requests are per page, so a prompt request from a second page
+    // would steal the first page's layer out from under it. Deny the request and log an error for now while
+    // we figure out the right way to handle this.
+    if (m_capturePreviewManager && m_capturePreviewPage && *m_capturePreviewPage != pageIdentifier) {
+        RELEASE_LOG_ERROR(WebRTC, "GPUProcess::startCapturePreview: a preview is already running for another page");
+        return completionHandler({ });
+    }
+    m_capturePreviewPage = pageIdentifier;
+
+    if (!m_capturePreviewManager) {
+        m_capturePreviewManager = CapturePreviewManager::create();
+        m_capturePreviewManager->setAudioLevelHandler([](float level) {
+            if (RefPtr connection = GPUProcess::singleton().parentProcessConnection())
+                connection->send(Messages::GPUProcessProxy::CapturePreviewAudioLevelChanged(level), 0);
+        });
+    }
+
+    // The preview has its own notifier rather than sharing m_orientation, which belongs to the web
+    // process connections.
+    m_capturePreviewManager->setOrientation(orientation);
+
+    m_capturePreviewManager->start(WTF::move(videoDevice), WTF::move(audioDevice), pageIdentifier, previewSize, WTF::move(completionHandler));
+}
+
+void GPUProcess::stopCapturePreview(WebCore::PageIdentifier pageIdentifier)
+{
+    // Dismissing a prompt that was declined a preview must not stop the preview another page owns.
+    if (m_capturePreviewPage && *m_capturePreviewPage != pageIdentifier)
+        return;
+
+    m_capturePreviewPage = { };
+
+    // stop() explicitly rather than relying on the destructor: an in-flight start holds a Ref on the
+    // manager through its layer-initialize callback, so dropping this one need not destroy it.
+    if (RefPtr capturePreviewManager = WTF::move(m_capturePreviewManager))
+        capturePreviewManager->stop();
+}
+#endif // ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
 
 void GPUProcess::updateCaptureAccess(bool allowAudioCapture, bool allowVideoCapture, bool allowDisplayCapture, bool willUseEchoCancellation, WebCore::ProcessIdentifier processID, CompletionHandler<void()>&& completionHandler)
 {

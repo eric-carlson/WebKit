@@ -34,6 +34,7 @@
 #include "SecurityFlags.h"
 #include "WebPageProxyIdentifier.h"
 #include <WebCore/FrameIdentifier.h>
+#include <WebCore/HostingContext.h>
 #include <WebCore/ImageBuffer.h>
 #include <WebCore/IntDegrees.h>
 #include <WebCore/MediaPlayerIdentifier.h>
@@ -45,6 +46,7 @@
 #include <pal/SessionID.h>
 #include <wtf/Function.h>
 #include <wtf/Lock.h>
+#include <wtf/Markable.h>
 #include <wtf/MemoryPressureHandler.h>
 #include <wtf/MonotonicTime.h>
 #include <wtf/NativePromise.h>
@@ -85,6 +87,7 @@ enum class VideoFrameRotation : uint16_t;
 
 namespace WebKit {
 
+class CapturePreviewManager;
 class GPUConnectionToWebProcess;
 class RemoteAudioSessionProxyManager;
 class RemoteSnapshot;
@@ -145,6 +148,13 @@ public:
 #if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
     WorkQueue& videoMediaStreamTrackRendererQueue();
     void ensureAVCaptureServerConnection();
+#if ENABLE(APP_PRIVACY_REPORT) && !PLATFORM(MACCATALYST)
+    static bool setCaptureTCCIdentity(const String& fallbackBundleIdentifier);
+
+    // A capture preview has no web process connection to derive an identity from, so it is
+    // attributed to the application itself.
+    bool setCapturePreviewTCCIdentity();
+#endif
 #endif
 
 #if USE(LIBWEBRTC) && PLATFORM(COCOA)
@@ -237,6 +247,10 @@ private:
     void rotationAngleForCaptureDeviceChanged(const String&, WebCore::VideoFrameRotation);
     void updateCaptureAccess(bool allowAudioCapture, bool allowVideoCapture, bool allowDisplayCapture, bool willUseEchoCancellation, WebCore::ProcessIdentifier, CompletionHandler<void()>&&);
     void updateCaptureOrigin(const WebCore::SecurityOriginData&, WebCore::ProcessIdentifier);
+#if PLATFORM(COCOA)
+    void startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, CompletionHandler<void(WebCore::HostingContext)>&&);
+    void stopCapturePreview(WebCore::PageIdentifier);
+#endif
     void addMockMediaDevice(const WebCore::MockMediaDevice&);
     void clearMockMediaDevices();
     void removeMockMediaDevice(const String&);
@@ -293,7 +307,9 @@ private:
         bool willUseEchoCancellation { false };
     };
     HashMap<WebCore::ProcessIdentifier, MediaCaptureAccess> m_mediaCaptureAccessMap;
-#if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
+#if PLATFORM(COCOA)
+    RefPtr<CapturePreviewManager> m_capturePreviewManager;
+    Markable<WebCore::PageIdentifier> m_capturePreviewPage;
     RefPtr<WorkQueue> m_videoMediaStreamTrackRendererQueue;
 #endif
     WebCore::IntDegrees m_orientation { 0 };

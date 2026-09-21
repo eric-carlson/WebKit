@@ -32,16 +32,17 @@
 #import "GPUProcessCreationParameters.h"
 #import "Logging.h"
 #import "RemoteRenderingBackend.h"
+#import "TCCSoftLink.h"
 #import <WebCore/AV1UtilitiesCocoa.h>
+#import <WebCore/RealtimeMediaSourceCenter.h>
 #import <WebCore/VP9UtilitiesCocoa.h>
 #import <pal/spi/cocoa/AVFoundationSPI.h>
 #import <pal/spi/cocoa/MetalSPI.h>
 #import <wtf/RetainPtr.h>
 #import <wtf/cocoa/SpanCocoa.h>
 
-#if PLATFORM(MAC)
 #include <pal/spi/cocoa/LaunchServicesSPI.h>
-#endif
+#include <wtf/OSObjectPtr.h>
 
 #if PLATFORM(VISION) && ENABLE(MODEL_PROCESS) && HAVE(CORE_RE)
 #include "CoreIPCAuditToken.h"
@@ -244,6 +245,52 @@ void GPUProcess::registerFonts(Vector<SandboxExtension::Handle>&& sandboxExtensi
     for (auto& sandboxExtension : sandboxExtensions)
         SandboxExtension::consumePermanently(sandboxExtension);
 }
+
+#if ENABLE(MEDIA_STREAM) && ENABLE(APP_PRIVACY_REPORT) && !PLATFORM(MACCATALYST)
+bool GPUProcess::setCaptureTCCIdentity(const String& fallbackBundleIdentifier)
+{
+    auto auditToken = protect(GPUProcess::singleton().parentProcessConnection())->getAuditToken();
+    if (!auditToken) {
+        RELEASE_LOG_ERROR(WebRTC, "setCaptureTCCIdentity: getAuditToken returned null");
+        return false;
+    }
+
+    NSError *error = nil;
+    RetainPtr bundleProxy = [LSBundleProxy bundleProxyWithAuditToken:*auditToken error:&error];
+    RELEASE_LOG_ERROR_IF(error, WebRTC, "setCaptureTCCIdentity: -[LSBundleProxy bundleProxyWithAuditToken:error:] failed with error %s", [[error localizedDescription] UTF8String]);
+
+    String bundleIdentifier = [bundleProxy bundleIdentifier];
+    if (bundleIdentifier.isNull())
+        bundleIdentifier = fallbackBundleIdentifier;
+
+    if (bundleIdentifier.isNull()) {
+        RELEASE_LOG_ERROR(WebRTC, "setCaptureTCCIdentity: unable to get the bundle identifier");
+        return false;
+    }
+
+    // FIXME: Adopting is needed here but static analysis is not able to tell.
+    SUPPRESS_RETAINPTR_CTOR_ADOPT OSObjectPtr identity = adoptOSObject(tcc_identity_create(TCC_IDENTITY_CODE_BUNDLE_ID, bundleIdentifier.utf8().legacyCStringPointer()));
+    if (!identity) {
+        RELEASE_LOG_ERROR(WebRTC, "setCaptureTCCIdentity: tcc_identity_create returned null");
+        return false;
+    }
+
+    WebCore::RealtimeMediaSourceCenter::singleton().setIdentity(WTF::move(identity));
+    return true;
+}
+
+bool GPUProcess::setCapturePreviewTCCIdentity()
+{
+    String fallbackBundleIdentifier;
+    for (Ref connection : m_webProcessConnections.values()) {
+        fallbackBundleIdentifier = connection->applicationBundleIdentifier();
+        if (!fallbackBundleIdentifier.isNull())
+            break;
+    }
+
+    return setCaptureTCCIdentity(fallbackBundleIdentifier);
+}
+#endif
 
 } // namespace WebKit
 
