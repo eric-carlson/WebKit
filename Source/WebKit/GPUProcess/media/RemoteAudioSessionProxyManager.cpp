@@ -31,11 +31,13 @@
 #include "GPUConnectionToWebProcess.h"
 #include "GPUProcess.h"
 #include "GPUProcessConnectionMessages.h"
+#include "Logging.h"
 #include "RemoteAudioSessionProxy.h"
 #include <WebCore/AudioSession.h>
 #include <WebCore/CoreAudioCaptureSource.h>
 #include <WebCore/PlatformMediaSessionManager.h>
 #include <wtf/HashCountedSet.h>
+#include <wtf/RunLoop.h>
 #include <wtf/TZoneMallocInlines.h>
 
 #if PLATFORM(IOS_FAMILY)
@@ -88,6 +90,15 @@ void RemoteAudioSessionProxyManager::updateCategory()
     HashCountedSet<AudioSession::CategoryType, WTF::IntHash<AudioSession::CategoryType>, WTF::StrongEnumHashTraits<AudioSession::CategoryType>> categoryCounts;
     HashCountedSet<AudioSession::Mode, WTF::IntHash<AudioSession::Mode>, WTF::StrongEnumHashTraits<AudioSession::Mode>> modeCounts;
     HashCountedSet<RouteSharingPolicy, WTF::IntHash<RouteSharingPolicy>, WTF::StrongEnumHashTraits<RouteSharingPolicy>> policyCounts;
+
+    // A capture preview belongs to no web process, so it votes here rather than through a proxy.
+    // Without a vote a preview started while nothing else is capturing finds the session in a
+    // playback category, and on iOS BaseAudioCaptureUnit then refuses to start the unit.
+    if (m_capturePreviewActive) {
+        categoryCounts.add(AudioSession::CategoryType::PlayAndRecord);
+        modeCounts.add(AudioSession::Mode::VideoChat);
+    }
+
     for (Ref otherProxy : m_proxies) {
         categoryCounts.add(otherProxy->category());
         modeCounts.add(otherProxy->mode());
@@ -121,6 +132,13 @@ void RemoteAudioSessionProxyManager::updateCategory()
         policy = RouteSharingPolicy::LongFormAudio;
     else if (policyCounts.contains(RouteSharingPolicy::Independent))
         ASSERT_NOT_REACHED();
+
+    // Category and policy are voted for independently above, so a page playing audible video can pair
+    // its long form policy with someone else's recording category. AVAudioSession rejects that pair
+    // outright, which leaves the category as it was, and anything that reads the category back before
+    // recording then silently does not record. Follow the same rule the web process votes by.
+    if (category != AudioSession::CategoryType::MediaPlayback)
+        policy = RouteSharingPolicy::Default;
 
     AudioSession::singleton().setCategory(category, mode, policy);
 }
@@ -159,6 +177,15 @@ bool RemoteAudioSessionProxyManager::hasOtherActiveProxyThan(RemoteAudioSessionP
 {
     for (auto& proxy : m_proxies) {
         if (proxy.isActive() && &proxy != &proxyToExclude)
+            return true;
+    }
+    return false;
+}
+
+bool RemoteAudioSessionProxyManager::hasActiveProxy()
+{
+    for (auto& proxy : m_proxies) {
+        if (proxy.isActive())
             return true;
     }
     return false;
@@ -256,6 +283,52 @@ Ref<AudioSession::SetActivePromise> RemoteAudioSessionProxyManager::tryToSetActi
     }
 #endif
     return AudioSession::SetActivePromise::createAndResolve();
+}
+
+void RemoteAudioSessionProxyManager::beginCapturePreview(CompletionHandler<void()>&& completionHandler)
+{
+    // A second microphone selection arrives with the session already configured, so it only has to
+    // wait for whatever the first one started.
+    if (m_capturePreviewActive)
+        return completionHandler();
+
+    m_capturePreviewActive = true;
+    updateCategory();
+
+#if PLATFORM(IOS_FAMILY)
+    // A preview captures on behalf of the application, and activation requires some process to have
+    // been named as presenting. With no proxy to take one from, name the UI process.
+    if (RefPtr parentProcessConnection = m_gpuProcess->parentProcessConnection())
+        protect(MediaSessionHelper::sharedHelper())->providePresentingApplicationPID(parentProcessConnection->remoteProcessID());
+
+    // A preview records, so it cannot mix: interrupt the pages that cannot mix with it, as a web
+    // process becoming active would.
+    for (Ref proxy : m_proxies) {
+        if (proxy->isActive() && !categoryCanMixWithOthers(proxy->category()))
+            proxy->beginInterruption();
+    }
+#endif
+
+    // Activated even when a page already holds the session, because the caller needs one thing to
+    // wait on: a capture unit reads the category back from the audio session as it starts, and gets
+    // the old one if it starts in the same turn as the category was set.
+    AudioSession::singleton().tryToSetActive(true)->whenSettled(RunLoop::mainSingleton(), [completionHandler = WTF::move(completionHandler)](auto&& result) mutable {
+        if (!result)
+            RELEASE_LOG_ERROR(WebRTC, "RemoteAudioSessionProxyManager::beginCapturePreview unable to activate the audio session for a capture preview");
+        completionHandler();
+    });
+}
+
+void RemoteAudioSessionProxyManager::endCapturePreview()
+{
+    if (!m_capturePreviewActive)
+        return;
+
+    m_capturePreviewActive = false;
+    updateCategory();
+
+    if (!hasActiveProxy())
+        AudioSession::singleton().tryToSetActive(false)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
 }
 
 void RemoteAudioSessionProxyManager::updatePresentingProcesses()

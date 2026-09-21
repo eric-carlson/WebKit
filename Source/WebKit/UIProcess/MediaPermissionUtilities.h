@@ -25,8 +25,10 @@
 
 #pragma once
 
+#include <WebCore/CaptureDevice.h>
 #include <WebCore/SecurityOriginData.h>
 #include <wtf/CompletionHandler.h>
+#include <wtf/Function.h>
 #include <wtf/Vector.h>
 
 #if PLATFORM(COCOA)
@@ -73,6 +75,31 @@ void alertForPermission(WebPageProxy&, MediaPermissionReason, const WebCore::Sec
 
 void requestAVCaptureAccessForType(MediaPermissionType, CompletionHandler<void(bool authorized)>&&);
 MediaPermissionResult checkAVCaptureAccessForType(MediaPermissionType);
+#endif
+
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+using CapturePreviewDeviceListUpdater = Function<void(Vector<WebCore::CaptureDevice>&& videoDevices, Vector<WebCore::CaptureDevice>&& audioDevices)>;
+using CapturePreviewPromptDismisser = Function<void()>;
+
+struct CapturePreviewPromptRequest {
+    MediaPermissionReason reason;
+    WebCore::SecurityOriginData origin;
+    Vector<WebCore::CaptureDevice> eligibleVideoDevices;
+    Vector<WebCore::CaptureDevice> eligibleAudioDevices;
+};
+
+struct CapturePreviewPromptResult {
+    bool granted { false };
+    String selectedAudioDeviceUID;
+    String selectedVideoDeviceUID;
+};
+
+struct CapturePreviewPromptHandles {
+    CapturePreviewDeviceListUpdater deviceListUpdater;
+    CapturePreviewPromptDismisser promptDismisser;
+};
+
+CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy&, CapturePreviewPromptRequest&&, CompletionHandler<void(CapturePreviewPromptResult&&)>&&);
 #endif
 
 #if HAVE(SPEECHRECOGNIZER)

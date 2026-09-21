@@ -35,6 +35,7 @@
 #include <WebCore/ColorSpace.h>
 #include "RemoteSnapshotIdentifier.h"
 #include "WebPageProxyIdentifier.h"
+#include <WebCore/CaptureDevice.h>
 #include <WebCore/FrameIdentifier.h>
 #include <WebCore/IntDegrees.h>
 #include <WebCore/MediaPlayerIdentifier.h>
@@ -108,6 +109,10 @@ public:
     void enableMicrophoneMuteStatusAPI();
     void setOrientationForMediaCapture(WebCore::IntDegrees);
     void rotationAngleForCaptureDeviceChanged(const String&, WebCore::VideoFrameRotation);
+    void startCapturePreview(std::optional<WebCore::CaptureDevice>&&, std::optional<WebCore::CaptureDevice>&&, WebCore::PageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, CompletionHandler<void(WebCore::HostingContext)>&&);
+    void stopCapturePreview(WebCore::PageIdentifier);
+    void setCapturePreviewAudioLevelHandler(Function<void(float)>&& handler) { m_capturePreviewAudioLevelHandler = WTF::move(handler); }
+    void capturePreviewAudioLevelChanged(float);
     void startMonitoringCaptureDeviceRotation(WebCore::PageIdentifier, const String&);
     void stopMonitoringCaptureDeviceRotation(WebCore::PageIdentifier, const String&);
     void updateCaptureAccess(bool allowAudioCapture, bool allowVideoCapture, bool allowDisplayCapture, bool willUseEchoCancellation, WebCore::ProcessIdentifier, WebPageProxyIdentifier, CompletionHandler<void()>&&);
@@ -276,6 +281,7 @@ private:
 #endif
 #if PLATFORM(COCOA)
     bool m_hasSentTCCDSandboxExtension { false };
+    Function<void(float)> m_capturePreviewAudioLevelHandler;
     bool m_hasSentCameraSandboxExtension { false };
     bool m_hasSentMicrophoneSandboxExtension { false };
     bool m_hasSentDisplayCaptureSandboxExtension { false };

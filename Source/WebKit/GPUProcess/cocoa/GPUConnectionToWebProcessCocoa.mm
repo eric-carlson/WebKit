@@ -79,33 +79,7 @@ bool GPUConnectionToWebProcess::setCaptureAttributionString()
 void GPUConnectionToWebProcess::setTCCIdentity()
 {
 #if !PLATFORM(MACCATALYST)
-    auto auditToken = protect(gpuProcess().parentProcessConnection())->getAuditToken();
-    if (!auditToken) {
-        RELEASE_LOG_ERROR(WebRTC, "getAuditToken returned null");
-        return;
-    }
-
-    NSError *error = nil;
-    auto bundleProxy = [LSBundleProxy bundleProxyWithAuditToken:*auditToken error:&error];
-    RELEASE_LOG_ERROR_IF(error, WebRTC, "-[LSBundleProxy bundleProxyWithAuditToken:error:] failed with error %s", [[error localizedDescription] UTF8String]);
-
-    String bundleIdentifier = bundleProxy.bundleIdentifier;
-    if (bundleIdentifier.isNull())
-        bundleIdentifier = m_applicationBundleIdentifier;
-
-    if (bundleIdentifier.isNull()) {
-        RELEASE_LOG_ERROR(WebRTC, "Unable to get the bundle identifier");
-        return;
-    }
-
-    // FIXME: Adopting is needed here but static analysis is not able to tell.
-    SUPPRESS_RETAINPTR_CTOR_ADOPT OSObjectPtr identity = adoptOSObject(tcc_identity_create(TCC_IDENTITY_CODE_BUNDLE_ID, bundleIdentifier.utf8().legacyCStringPointer()));
-    if (!identity) {
-        RELEASE_LOG_ERROR(WebRTC, "tcc_identity_create returned null");
-        return;
-    }
-
-    WebCore::RealtimeMediaSourceCenter::singleton().setIdentity(WTF::move(identity));
+    GPUProcess::setCaptureTCCIdentity(m_applicationBundleIdentifier);
 #endif // !PLATFORM(MACCATALYST)
 }
 #endif // ENABLE(APP_PRIVACY_REPORT)
