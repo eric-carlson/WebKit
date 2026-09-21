@@ -1249,6 +1249,9 @@
 /* Title for file upload progress view */
 "Preparing (file upload)" = "Preparing…";
 
+/* Badge label identifying the live camera preview in the user media prompt */
+"Preview (usermedia)" = "Preview";
+
 /* Previous Page context menu item */
 "Previous Page" = "Previous Page";
 

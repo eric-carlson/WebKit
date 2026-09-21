@@ -30,6 +30,10 @@
 #include <wtf/Vector.h>
 #include <wtf/text/WTFString.h>
 
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+#include "MediaPermissionUtilities.h"
+#endif
+
 namespace WebCore {
 class SecurityOrigin;
 }
@@ -46,7 +50,12 @@ public:
 
     void allow(const String& audioDeviceUID, const String& videoDeviceUID);
     void allow();
+    void preferDevices(const String& audioDeviceUID, const String& videoDeviceUID, unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount);
     void promptForGetUserMedia();
+
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+    void devicesChanged();
+#endif
 
     enum class UserMediaDisplayCapturePromptType { Window, Screen, UserChoose };
     virtual void promptForGetDisplayMedia(UserMediaDisplayCapturePromptType);
@@ -123,6 +132,9 @@ private:
     WebCore::MediaDeviceHashSalts m_deviceIdentifierHashSalts;
     CompletionHandler<void(bool)> m_decisionCompletionHandler;
     Function<void()> m_beforeStartingCaptureCallback;
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+    CapturePreviewDeviceListUpdater m_previewDeviceListUpdater;
+#endif
 };
 
 String convertEnumerationToString(UserMediaPermissionRequestProxy::UserMediaAccessDenialReason);

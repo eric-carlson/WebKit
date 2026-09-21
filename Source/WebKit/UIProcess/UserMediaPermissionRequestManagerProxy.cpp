@@ -188,6 +188,13 @@ void UserMediaPermissionRequestManagerProxy::captureDevicesChanged()
     if (!page || !page->hasRunningProcess() || !page->mainFrame())
         return;
 
+#if PLATFORM(MAC)
+    // A visible prompt showing a device menu has to track attach and detach itself; the
+    // notification below only reaches web content processes.
+    if (RefPtr currentUserMediaRequest = m_currentUserMediaRequest)
+        currentUserMediaRequest->devicesChanged();
+#endif
+
     Ref origin = WebCore::SecurityOrigin::create(page->mainFrame()->url());
     getUserMediaPermissionInfo(page->mainFrame()->frameID(), origin.get(), WTF::move(origin), [weakThis = WeakPtr { *this }](auto cameraState, auto microphoneState) {
         if (RefPtr protectedThis = weakThis.get())
@@ -479,6 +486,39 @@ bool UserMediaPermissionRequestManagerProxy::hasGrantedRequest(std::optional<Fra
     return false;
 }
 
+#if ENABLE(MEDIA_STREAM)
+auto UserMediaPermissionRequestManagerProxy::previouslySelectedDeviceIDs(const UserMediaPermissionRequestProxy& request) const -> PreviouslySelectedDeviceIDs
+{
+    PreviouslySelectedDeviceIDs selected;
+
+    // Newest first, so the most recent choice wins when a page has been granted more than once.
+    // A granted request's eligible lists were reordered by allow(), so element 0 of each is the
+    // device the user actually picked.
+    for (size_t index = m_grantedRequests.size(); index--;) {
+        Ref grantedRequest = m_grantedRequests[index];
+
+        if (grantedRequest->requiresDisplayCapture())
+            continue;
+        if (!grantedRequest->userMediaDocumentSecurityOrigin().isSameSchemeHostPort(request.userMediaDocumentSecurityOrigin()))
+            continue;
+        if (!grantedRequest->topLevelDocumentSecurityOrigin().isSameSchemeHostPort(request.topLevelDocumentSecurityOrigin()))
+            continue;
+        if (grantedRequest->frameID() != request.frameID())
+            continue;
+
+        if (selected.audioDeviceUID.isEmpty() && grantedRequest->requiresAudioCapture())
+            selected.audioDeviceUID = grantedRequest->audioDevice().persistentId();
+        if (selected.videoDeviceUID.isEmpty() && grantedRequest->requiresVideoCapture())
+            selected.videoDeviceUID = grantedRequest->videoDevice().persistentId();
+
+        if (!selected.audioDeviceUID.isEmpty() && !selected.videoDeviceUID.isEmpty())
+            break;
+    }
+
+    return selected;
+}
+#endif
+
 static bool isMatchingDeniedRequest(const UserMediaPermissionRequestProxy& request, const UserMediaPermissionRequestManagerProxy::DeniedRequest& deniedRequest)
 {
     return deniedRequest.mainFrameID == request.mainFrameID()
@@ -696,8 +736,7 @@ void UserMediaPermissionRequestManagerProxy::processUserMediaPermissionRequest()
                 return;
             }
 
-            auto validDevices = WTF::move(result).value();
-            protectedThis->processUserMediaPermissionValidRequest(WTF::move(validDevices.audioDevices), WTF::move(validDevices.videoDevices), WTF::move(deviceHashSaltsForFrame));
+            protectedThis->processUserMediaPermissionValidRequest(WTF::move(result).value(), WTF::move(deviceHashSaltsForFrame));
         };
 
         protectedThis->syncWithWebCorePrefs();
@@ -725,18 +764,18 @@ void UserMediaPermissionRequestManagerProxy::processUserMediaPermissionInvalidRe
     denyRequest(protect(*m_currentUserMediaRequest), filterConstraint ? MediaConstraintType::Unknown : invalidConstraint);
 }
 
-void UserMediaPermissionRequestManagerProxy::processUserMediaPermissionValidRequest(Vector<CaptureDevice>&& audioDevices, Vector<CaptureDevice>&& videoDevices, WebCore::MediaDeviceHashSalts&& deviceIdentifierHashSalts)
+void UserMediaPermissionRequestManagerProxy::processUserMediaPermissionValidRequest(RealtimeMediaSourceCenter::ValidDevices&& validDevices, WebCore::MediaDeviceHashSalts&& deviceIdentifierHashSalts)
 {
     RefPtr currentUserMediaRequest = m_currentUserMediaRequest;
-    ALWAYS_LOG(LOGIDENTIFIER, currentUserMediaRequest->userMediaID() ? currentUserMediaRequest->userMediaID()->toUInt64() : 0, ", video: ", videoDevices.size(), " audio: ", audioDevices.size());
-    if (!currentUserMediaRequest->requiresDisplayCapture() && videoDevices.isEmpty() && audioDevices.isEmpty()) {
+    ALWAYS_LOG(LOGIDENTIFIER, currentUserMediaRequest->userMediaID() ? currentUserMediaRequest->userMediaID()->toUInt64() : 0, ", video: ", validDevices.videoDevices.size(), " audio: ", validDevices.audioDevices.size());
+    if (!currentUserMediaRequest->requiresDisplayCapture() && validDevices.videoDevices.isEmpty() && validDevices.audioDevices.isEmpty()) {
         denyRequest(*currentUserMediaRequest, UserMediaPermissionRequestProxy::UserMediaAccessDenialReason::NoConstraints);
         return;
     }
 
     currentUserMediaRequest->setDeviceIdentifierHashSalts(WTF::move(deviceIdentifierHashSalts));
-    currentUserMediaRequest->setEligibleVideoDevices(WTF::move(videoDevices));
-    currentUserMediaRequest->setEligibleAudioDevices(WTF::move(audioDevices));
+    currentUserMediaRequest->setEligibleVideoDevices(WTF::move(validDevices.videoDevices));
+    currentUserMediaRequest->setEligibleAudioDevices(WTF::move(validDevices.audioDevices));
 
     auto action = getRequestAction(*currentUserMediaRequest);
     ALWAYS_LOG(LOGIDENTIFIER, currentUserMediaRequest->userMediaID() ? currentUserMediaRequest->userMediaID()->toUInt64() : 0, ", action: ", action);
@@ -754,6 +793,14 @@ void UserMediaPermissionRequestManagerProxy::processUserMediaPermissionValidRequ
 
     if (action == RequestAction::Grant) {
         ASSERT(!currentUserMediaRequest->requiresDisplayCapture());
+
+        // This request is being granted without a prompt, so carry over whichever device the user
+        // chose the first time, but only where this call's constraints have no better match to
+        // offer.
+        if (protect(page->preferences())->captureDevicePreviewInPromptEnabled()) {
+            auto selected = previouslySelectedDeviceIDs(*currentUserMediaRequest);
+            currentUserMediaRequest->preferDevices(selected.audioDeviceUID, selected.videoDeviceUID, validDevices.bestMatchingAudioDeviceCount, validDevices.bestMatchingVideoDeviceCount);
+        }
 
         if (page->isViewVisible())
             grantRequest(*currentUserMediaRequest);

@@ -46,6 +46,271 @@
 #import <pal/cocoa/AVFoundationSoftLink.h>
 #import <pal/cocoa/SpeechSoftLink.h>
 
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+#import "WKCaptureDevicePreviewController.h"
+#import <wtf/WeakObjCPtr.h>
+
+static const CGFloat devicePopUpHeight = 25;
+static const CGFloat audioLevelIndicatorHeight = 12;
+static const CGFloat chooserElementSpacing = 8;
+static const CGFloat previewBadgeInset = 8;
+static const NSTimeInterval audioLevelUpdateInterval = 1.0 / 15;
+
+@interface WKCaptureDeviceChooser : NSObject {
+    RetainPtr<NSView> _view;
+    RetainPtr<NSPopUpButton> _videoPopUp;
+    RetainPtr<NSPopUpButton> _audioPopUp;
+    RetainPtr<NSLevelIndicator> _audioLevelIndicator;
+    RetainPtr<NSTimer> _audioLevelTimer;
+    RetainPtr<NSButton> _allowButton;
+    RetainPtr<WKCaptureDevicePreviewController> _preview;
+    Vector<WebCore::CaptureDevice> _videoDevices;
+    Vector<WebCore::CaptureDevice> _audioDevices;
+    BOOL _showsVideo;
+    BOOL _showsAudio;
+}
+
+- (instancetype)initWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;
+- (NSView *)view;
+- (NSString *)selectedVideoDeviceID;
+- (NSString *)selectedAudioDeviceID;
+- (void)setAllowButton:(NSButton *)allowButton;
+- (void)updateWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;
+- (void)stop;
+
+@end
+
+@implementation WKCaptureDeviceChooser
+
+- (instancetype)initWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
+{
+    if (!(self = [super init]))
+        return nil;
+
+    _videoDevices = WTF::move(videoDevices);
+    _audioDevices = WTF::move(audioDevices);
+    _showsVideo = !_videoDevices.isEmpty();
+    _showsAudio = !_audioDevices.isEmpty();
+    _preview = adoptNS([[WKCaptureDevicePreviewController alloc] init]);
+
+    RetainPtr previewView = [_preview view];
+    CGFloat width = NSWidth([previewView frame]);
+    CGFloat previewHeight = NSHeight([previewView frame]);
+
+    // Frames are laid out bottom-up before the container exists, because the container's
+    // height depends on which of the two device types this request actually asked for.
+    CGFloat y = 0;
+    NSRect audioPopUpFrame = NSZeroRect;
+    NSRect audioLevelFrame = NSZeroRect;
+    NSRect videoPopUpFrame = NSZeroRect;
+    NSRect previewFrame = NSZeroRect;
+
+    if (_showsAudio) {
+        audioPopUpFrame = NSMakeRect(0, y, width, devicePopUpHeight);
+        y += devicePopUpHeight + chooserElementSpacing;
+        audioLevelFrame = NSMakeRect(0, y, width, audioLevelIndicatorHeight);
+        y += audioLevelIndicatorHeight + chooserElementSpacing;
+    }
+
+    if (_showsVideo) {
+        videoPopUpFrame = NSMakeRect(0, y, width, devicePopUpHeight);
+        y += devicePopUpHeight + chooserElementSpacing;
+        previewFrame = NSMakeRect(0, y, width, previewHeight);
+        y += previewHeight;
+    }
+
+    _view = adoptNS([[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, y)]);
+
+    if (_showsVideo) {
+        [previewView setFrameOrigin:previewFrame.origin];
+        [_view addSubview:previewView.get()];
+
+        RetainPtr badge = adoptNS([[NSTextField alloc] initWithFrame:NSZeroRect]);
+        [badge setStringValue:WEB_UI_STRING_KEY(@"Preview", "Preview (usermedia)", @"Badge label identifying the live camera preview in the user media prompt").createNSString().get()];
+        [badge setEditable:NO];
+        [badge setSelectable:NO];
+        [badge setBordered:NO];
+        [badge setDrawsBackground:YES];
+        [badge setBackgroundColor:[NSColor controlAccentColor]];
+        [badge setTextColor:[NSColor alternateSelectedControlTextColor]];
+        [badge sizeToFit];
+        [badge setFrameOrigin:NSMakePoint(NSMaxX(previewFrame) - NSWidth([badge frame]) - previewBadgeInset, NSMaxY(previewFrame) - NSHeight([badge frame]) - previewBadgeInset)];
+        [_view addSubview:badge.get()];
+
+        _videoPopUp = adoptNS([[NSPopUpButton alloc] initWithFrame:videoPopUpFrame pullsDown:NO]);
+        [_videoPopUp setTarget:self];
+        [_videoPopUp setAction:@selector(_selectedVideoDeviceDidChange:)];
+        [_view addSubview:_videoPopUp.get()];
+    }
+
+    if (_showsAudio) {
+        _audioLevelIndicator = adoptNS([[NSLevelIndicator alloc] initWithFrame:audioLevelFrame]);
+        [_audioLevelIndicator setLevelIndicatorStyle:NSLevelIndicatorStyleContinuousCapacity];
+        [_audioLevelIndicator setMinValue:0];
+        [_audioLevelIndicator setMaxValue:1];
+        [_audioLevelIndicator setDoubleValue:0];
+        [_audioLevelIndicator setEditable:NO];
+        [_view addSubview:_audioLevelIndicator.get()];
+
+        _audioPopUp = adoptNS([[NSPopUpButton alloc] initWithFrame:audioPopUpFrame pullsDown:NO]);
+        [_audioPopUp setTarget:self];
+        [_audioPopUp setAction:@selector(_selectedAudioDeviceDidChange:)];
+        [_view addSubview:_audioPopUp.get()];
+    }
+
+    [self _rebuildMenusPreservingVideoSelection:nil audioSelection:nil];
+
+    [_preview startWithVideoDeviceID:[self selectedVideoDeviceID] audioDeviceID:[self selectedAudioDeviceID]];
+
+    if (_showsAudio) {
+        // Weak, because NSTimer retains its block and the chooser owns the timer.
+        WeakObjCPtr<WKCaptureDeviceChooser> weakSelf { self };
+        _audioLevelTimer = [NSTimer scheduledTimerWithTimeInterval:audioLevelUpdateInterval repeats:YES block:makeBlockPtr([weakSelf](NSTimer *) mutable {
+            if (RetainPtr strongSelf = weakSelf.get())
+                [strongSelf _updateAudioLevel];
+        }).get()];
+    }
+
+    return self;
+}
+
+- (void)dealloc
+{
+    [self stop];
+    [super dealloc];
+}
+
+- (NSView *)view
+{
+    return _view.get();
+}
+
+- (NSString *)_selectedDeviceIDForPopUp:(NSPopUpButton *)popUp devices:(const Vector<WebCore::CaptureDevice>&)devices
+{
+    if (NSString *deviceID = dynamic_objc_cast<NSString>([[popUp selectedItem] representedObject]))
+        return deviceID;
+
+    if (devices.isEmpty())
+        return nil;
+
+    return devices[0].persistentId().createNSString().autorelease();
+}
+
+- (NSString *)selectedVideoDeviceID
+{
+    return [self _selectedDeviceIDForPopUp:_videoPopUp.get() devices:_videoDevices];
+}
+
+- (NSString *)selectedAudioDeviceID
+{
+    return [self _selectedDeviceIDForPopUp:_audioPopUp.get() devices:_audioDevices];
+}
+
+- (void)_rebuildMenu:(NSPopUpButton *)popUp devices:(const Vector<WebCore::CaptureDevice>&)devices reselecting:(NSString *)deviceIDToReselect
+{
+    if (!popUp)
+        return;
+
+    // Menu items are built directly because -addItemWithTitle: drops duplicate titles,
+    // and two devices can share a label while still needing separate entries.
+    RetainPtr menu = adoptNS([[NSMenu alloc] init]);
+    NSInteger indexToSelect = NSNotFound;
+
+    for (auto& device : devices) {
+        RetainPtr title = device.label().createNSString();
+        RetainPtr item = adoptNS([[NSMenuItem alloc] initWithTitle:title.get() action:nil keyEquivalent:@""]);
+        RetainPtr deviceID = device.persistentId().createNSString();
+        [item setRepresentedObject:deviceID.get()];
+        [item setToolTip:title.get()];
+
+        if (indexToSelect == NSNotFound && deviceIDToReselect && [deviceID isEqualToString:deviceIDToReselect])
+            indexToSelect = [menu numberOfItems];
+
+        [menu addItem:item.get()];
+    }
+
+    [popUp setMenu:menu.get()];
+
+    if (!devices.isEmpty())
+        [popUp selectItemAtIndex:indexToSelect == NSNotFound ? 0 : indexToSelect];
+
+    [popUp setHidden:devices.size() < 2];
+    [popUp setEnabled:devices.size() > 1];
+}
+
+- (void)_rebuildMenusPreservingVideoSelection:(NSString *)videoDeviceID audioSelection:(NSString *)audioDeviceID
+{
+    [self _rebuildMenu:_videoPopUp.get() devices:_videoDevices reselecting:videoDeviceID];
+    [self _rebuildMenu:_audioPopUp.get() devices:_audioDevices reselecting:audioDeviceID];
+}
+
+- (void)setAllowButton:(NSButton *)allowButton
+{
+    _allowButton = allowButton;
+    [self _updateAllowButtonEnablement];
+}
+
+- (void)_updateAllowButtonEnablement
+{
+    // A kind the request asked for and that has since lost every device makes the request
+    // unsatisfiable, so granting it would hand the page a stream it cannot build. This covers
+    // a camera-and-microphone request losing only one of the two, not just losing everything.
+    bool canStillSatisfyRequest = !(_showsVideo && _videoDevices.isEmpty()) && !(_showsAudio && _audioDevices.isEmpty());
+    [_allowButton setEnabled:canStillSatisfyRequest];
+}
+
+- (void)updateWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
+{
+    RetainPtr previousVideo = [self selectedVideoDeviceID];
+    RetainPtr previousAudio = [self selectedAudioDeviceID];
+
+    _videoDevices = WTF::move(videoDevices);
+    _audioDevices = WTF::move(audioDevices);
+    [self _rebuildMenusPreservingVideoSelection:previousVideo.get() audioSelection:previousAudio.get()];
+    [self _updateAllowButtonEnablement];
+
+    if (_videoDevices.isEmpty() && _audioDevices.isEmpty()) {
+        [_preview stop];
+        return;
+    }
+
+    // Only disturb a running device when the one being previewed is gone; otherwise the image
+    // or meter would break on every unrelated attach or detach.
+    RetainPtr nowVideo = [self selectedVideoDeviceID];
+    if (![nowVideo isEqualToString:previousVideo.get()])
+        [_preview switchToVideoDeviceID:nowVideo.get()];
+
+    RetainPtr nowAudio = [self selectedAudioDeviceID];
+    if (![nowAudio isEqualToString:previousAudio.get()])
+        [_preview switchToAudioDeviceID:nowAudio.get()];
+}
+
+- (void)_updateAudioLevel
+{
+    [_audioLevelIndicator setDoubleValue:[_preview normalizedAudioLevel]];
+}
+
+- (void)_selectedVideoDeviceDidChange:(id)sender
+{
+    [_preview switchToVideoDeviceID:[self selectedVideoDeviceID]];
+}
+
+- (void)_selectedAudioDeviceDidChange:(id)sender
+{
+    [_preview switchToAudioDeviceID:[self selectedAudioDeviceID]];
+}
+
+- (void)stop
+{
+    [_audioLevelTimer invalidate];
+    _audioLevelTimer = nil;
+    [_preview stop];
+}
+
+@end
+
+#endif // PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+
 namespace WebKit {
 
 bool checkSandboxRequirementForType(MediaPermissionType type)
@@ -235,6 +500,56 @@ void alertForPermission(WebPageProxy& page, MediaPermissionReason reason, const 
     [[webView _wk_viewControllerForFullScreenPresentation] presentViewController:alert.get() animated:YES completion:nil];
 #endif
 }
+
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+
+void alertForPermissionWithCapturePreview(WebPageProxy& page, MediaPermissionReason reason, const WebCore::SecurityOriginData& origin, Vector<WebCore::CaptureDevice>&& eligibleVideoDevices, Vector<WebCore::CaptureDevice>&& eligibleAudioDevices, CompletionHandler<void(bool, String, String)>&& completionHandler, CapturePreviewDeviceListUpdater& deviceListUpdater)
+{
+    ASSERT(isMainRunLoop());
+
+    RetainPtr webView = page.cocoaView();
+    if (!webView) {
+        completionHandler(false, { }, { });
+        return;
+    }
+
+    RetainPtr alertTitle = alertMessageText(reason, origin);
+    if (!alertTitle) {
+        completionHandler(false, { }, { });
+        return;
+    }
+
+    RetainPtr chooser = adoptNS([[WKCaptureDeviceChooser alloc] initWithVideoDevices:WTF::move(eligibleVideoDevices) audioDevices:WTF::move(eligibleAudioDevices)]);
+
+    auto alert = adoptNS([NSAlert new]);
+    [alert setMessageText:alertTitle.get()];
+    RetainPtr allowButton = [alert addButtonWithTitle:allowButtonText(reason).get()];
+    allowButton.get().keyEquivalent = @"";
+    RetainPtr denyButton = [alert addButtonWithTitle:doNotAllowButtonText(reason).get()];
+    denyButton.get().keyEquivalent = @"\E";
+    [alert setAccessoryView:[chooser view]];
+    [chooser setAllowButton:allowButton.get()];
+
+    deviceListUpdater = [chooser](Vector<WebCore::CaptureDevice>&& videoDevices, Vector<WebCore::CaptureDevice>&& audioDevices) mutable {
+        [chooser updateWithVideoDevices:WTF::move(videoDevices) audioDevices:WTF::move(audioDevices)];
+    };
+
+    auto completionBlock = makeBlockPtr([completionHandler = WTF::move(completionHandler), chooser](NSModalResponse returnCode) mutable {
+        bool shouldAllow = returnCode == NSAlertFirstButtonReturn;
+        RetainPtr selectedVideoDeviceID = shouldAllow ? [chooser selectedVideoDeviceID] : nil;
+        RetainPtr selectedAudioDeviceID = shouldAllow ? [chooser selectedAudioDeviceID] : nil;
+
+        // Stopping before the grant is reported means the capture that follows is the only
+        // holder of these devices, so this never depends on concurrent access to one of them.
+        [chooser stop];
+
+        completionHandler(shouldAllow, selectedAudioDeviceID.get(), selectedVideoDeviceID.get());
+    });
+
+    [alert beginSheetModalForWindow:retainPtr([webView window]).get() completionHandler:completionBlock.get()];
+}
+
+#endif // PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
 
 
 

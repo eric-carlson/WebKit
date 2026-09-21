@@ -24,6 +24,7 @@
 #include "MediaPermissionUtilities.h"
 #include "UserMediaPermissionRequestManagerProxy.h"
 #include "WebPageProxy.h"
+#include "WebPreferences.h"
 #include <WebCore/CaptureDeviceManager.h>
 #include <WebCore/RealtimeMediaSourceCenter.h>
 #include <WebCore/SecurityOrigin.h>
@@ -75,12 +76,18 @@ bool UserMediaPermissionRequestProxy::willUseEchoCancellation() const
 }
 
 #if ENABLE(MEDIA_STREAM)
-static inline void setDeviceAsFirst(Vector<CaptureDevice>& devices, const String& deviceID)
+static inline size_t indexOfDevice(const Vector<CaptureDevice>& devices, const String& deviceID)
 {
-    size_t index = devices.findIf([&deviceID](const auto& device) {
+    return devices.findIf([&deviceID](const auto& device) {
         return device.persistentId() == deviceID;
     });
-    ASSERT(index != notFound);
+}
+
+static inline bool moveDeviceToFront(Vector<CaptureDevice>& devices, const String& deviceID)
+{
+    size_t index = indexOfDevice(devices, deviceID);
+    if (index == notFound)
+        return false;
 
     if (index) {
         auto device = devices[index];
@@ -89,22 +96,48 @@ static inline void setDeviceAsFirst(Vector<CaptureDevice>& devices, const String
         devices.removeAt(index);
         devices.insert(0, WTF::move(device));
     }
+
+    return true;
 }
 #endif
 
 void UserMediaPermissionRequestProxy::allow(const String& audioDeviceUID, const String& videoDeviceUID)
 {
 #if ENABLE(MEDIA_STREAM)
-    if (!audioDeviceUID.isEmpty())
-        setDeviceAsFirst(m_eligibleAudioDevices, audioDeviceUID);
-    if (!videoDeviceUID.isEmpty())
-        setDeviceAsFirst(m_eligibleVideoDevices, videoDeviceUID);
+    if (!audioDeviceUID.isEmpty()) {
+        bool foundAudioDevice = moveDeviceToFront(m_eligibleAudioDevices, audioDeviceUID);
+        ASSERT_UNUSED(foundAudioDevice, foundAudioDevice);
+    }
+    if (!videoDeviceUID.isEmpty()) {
+        bool foundVideoDevice = moveDeviceToFront(m_eligibleVideoDevices, videoDeviceUID);
+        ASSERT_UNUSED(foundVideoDevice, foundVideoDevice);
+    }
 #else
     UNUSED_PARAM(audioDeviceUID);
     UNUSED_PARAM(videoDeviceUID);
 #endif
 
     allow();
+}
+
+void UserMediaPermissionRequestProxy::preferDevices(const String& audioDeviceUID, const String& videoDeviceUID, unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount)
+{
+#if ENABLE(MEDIA_STREAM)
+    // A previous choice only wins among the devices that match this call's constraints equally
+    // well, which the eligible lists hold as a prefix. Anything after that prefix matches worse,
+    // so promoting it would result in using a device whose characteristics are not the best match
+    // for the constraints. A device that is absent entirely, having been unplugged or excluded,
+    // is simply not preferred, and in both cases the best match stays first.
+    if (!audioDeviceUID.isEmpty() && indexOfDevice(m_eligibleAudioDevices, audioDeviceUID) < bestMatchingAudioDeviceCount)
+        moveDeviceToFront(m_eligibleAudioDevices, audioDeviceUID);
+    if (!videoDeviceUID.isEmpty() && indexOfDevice(m_eligibleVideoDevices, videoDeviceUID) < bestMatchingVideoDeviceCount)
+        moveDeviceToFront(m_eligibleVideoDevices, videoDeviceUID);
+#else
+    UNUSED_PARAM(audioDeviceUID);
+    UNUSED_PARAM(videoDeviceUID);
+    UNUSED_PARAM(bestMatchingAudioDeviceCount);
+    UNUSED_PARAM(bestMatchingVideoDeviceCount);
+#endif
 }
 
 void UserMediaPermissionRequestProxy::allow()
@@ -208,7 +241,22 @@ void UserMediaPermissionRequestProxy::promptForGetUserMedia()
     if (requiresAudioCapture())
         reason = requiresVideoCapture() ? MediaPermissionReason::CameraAndMicrophone : MediaPermissionReason::Microphone;
 
-    alertForPermission(*protect(manager->page()), reason, topLevelDocumentSecurityOrigin().data(), [this, protectedThis = Ref { *this }](bool granted) {
+    Ref page = *manager->page();
+
+#if PLATFORM(MAC)
+    if ((requiresVideoCapture() || requiresAudioCapture()) && protect(page->preferences())->captureDevicePreviewInPromptEnabled()) {
+        alertForPermissionWithCapturePreview(page, reason, topLevelDocumentSecurityOrigin().data(), Vector<WebCore::CaptureDevice> { m_eligibleVideoDevices }, Vector<WebCore::CaptureDevice> { m_eligibleAudioDevices }, [this, protectedThis = Ref { *this }](bool granted, String selectedAudioDeviceUID, String selectedVideoDeviceUID) {
+            m_previewDeviceListUpdater = nullptr;
+            if (!granted)
+                deny(UserMediaAccessDenialReason::PermissionDenied);
+            else
+                allow(selectedAudioDeviceUID, selectedVideoDeviceUID);
+        }, m_previewDeviceListUpdater);
+        return;
+    }
+#endif
+
+    alertForPermission(page, reason, topLevelDocumentSecurityOrigin().data(), [this, protectedThis = Ref { *this }](bool granted) {
         if (!granted)
             deny(UserMediaAccessDenialReason::PermissionDenied);
         else
@@ -216,6 +264,33 @@ void UserMediaPermissionRequestProxy::promptForGetUserMedia()
     });
 #endif
 }
+
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+void UserMediaPermissionRequestProxy::devicesChanged()
+{
+    if (!m_previewDeviceListUpdater)
+        return;
+
+    // The changed device set goes back through constraint validation rather than being used
+    // directly: a device attached while the prompt is up still has to satisfy the request's
+    // `exact` constraints before it can be offered.
+    RealtimeMediaSourceCenter::singleton().validateRequestConstraints([protectedThis = Ref { *this }](auto&& validDevices) mutable {
+        if (!protectedThis->m_previewDeviceListUpdater)
+            return;
+
+        if (!validDevices) {
+            protectedThis->m_eligibleVideoDevices = { };
+            protectedThis->m_eligibleAudioDevices = { };
+            protectedThis->m_previewDeviceListUpdater({ }, { });
+            return;
+        }
+
+        protectedThis->m_eligibleVideoDevices = WTF::move(validDevices->videoDevices);
+        protectedThis->m_eligibleAudioDevices = WTF::move(validDevices->audioDevices);
+        protectedThis->m_previewDeviceListUpdater(Vector<WebCore::CaptureDevice> { protectedThis->m_eligibleVideoDevices }, Vector<WebCore::CaptureDevice> { protectedThis->m_eligibleAudioDevices });
+    }, m_request, MediaDeviceHashSalts { m_deviceIdentifierHashSalts });
+}
+#endif
 
 void UserMediaPermissionRequestProxy::doDefaultAction()
 {

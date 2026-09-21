@@ -74,6 +74,11 @@ public:
     struct ValidDevices {
         Vector<CaptureDevice> audioDevices;
         Vector<CaptureDevice> videoDevices;
+        // Devices are ordered by how well they match the request, so those matching it as well as
+        // any other are a prefix of each list. A caller with its own preference may reorder within
+        // that prefix, but promoting a device from outside it would defeat the request.
+        unsigned bestMatchingAudioDeviceCount { 0 };
+        unsigned bestMatchingVideoDeviceCount { 0 };
     };
     using ValidateHandler = CompletionHandler<void(std::expected<ValidDevices, MediaConstraintType>&&)>;
     WEBCORE_EXPORT void validateRequestConstraints(ValidateHandler&&, const MediaStreamRequest&, MediaDeviceHashSalts&&);
