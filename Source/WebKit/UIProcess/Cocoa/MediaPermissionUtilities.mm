@@ -46,6 +46,10 @@
 #import <pal/cocoa/AVFoundationSoftLink.h>
 #import <pal/cocoa/SpeechSoftLink.h>
 
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+#import "WKCapturePreviewViewController.h"
+#endif
+
 namespace WebKit {
 
 bool checkSandboxRequirementForType(MediaPermissionType type)
@@ -235,6 +239,55 @@ void alertForPermission(WebPageProxy& page, MediaPermissionReason reason, const 
     [[webView _wk_viewControllerForFullScreenPresentation] presentViewController:alert.get() animated:YES completion:nil];
 #endif
 }
+
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+
+void alertForPermissionWithCapturePreview(WebPageProxy& page, MediaPermissionReason reason, const WebCore::SecurityOriginData& origin, Vector<WebCore::CaptureDevice>&& eligibleVideoDevices, Vector<WebCore::CaptureDevice>&& eligibleAudioDevices, CompletionHandler<void(bool, String, String)>&& completionHandler, CapturePreviewDeviceListUpdater& deviceListUpdater)
+{
+    ASSERT(isMainRunLoop());
+
+    RetainPtr webView = page.cocoaView();
+    if (!webView) {
+        completionHandler(false, { }, { });
+        return;
+    }
+
+    RetainPtr alertTitle = alertMessageText(reason, origin);
+    if (!alertTitle) {
+        completionHandler(false, { }, { });
+        return;
+    }
+
+    RetainPtr previewController = adoptNS([[WKCapturePreviewViewController alloc] initWithPage:page videoDevices:WTF::move(eligibleVideoDevices) audioDevices:WTF::move(eligibleAudioDevices)]);
+    auto alert = adoptNS([NSAlert new]);
+    [alert setMessageText:alertTitle.get()];
+    RetainPtr allowButton = [alert addButtonWithTitle:allowButtonText(reason).get()];
+    allowButton.get().keyEquivalent = @"";
+    RetainPtr denyButton = [alert addButtonWithTitle:doNotAllowButtonText(reason).get()];
+    denyButton.get().keyEquivalent = @"\E";
+    [alert setAccessoryView:[previewController view]];
+    [previewController setAllowButton:allowButton.get()];
+
+    deviceListUpdater = [previewController](Vector<WebCore::CaptureDevice>&& videoDevices, Vector<WebCore::CaptureDevice>&& audioDevices) mutable {
+        [previewController updateWithVideoDevices:WTF::move(videoDevices) audioDevices:WTF::move(audioDevices)];
+    };
+
+    auto completionBlock = makeBlockPtr([completionHandler = WTF::move(completionHandler), previewController](NSModalResponse returnCode) mutable {
+        bool shouldAllow = returnCode == NSAlertFirstButtonReturn;
+        RetainPtr selectedVideoDeviceUID = shouldAllow ? [previewController selectedVideoDeviceUID] : nil;
+        RetainPtr selectedAudioDeviceUID = shouldAllow ? [previewController selectedAudioDeviceUID] : nil;
+
+        // Stopping before the grant is reported means the capture that follows is the only
+        // holder of these devices, so this never depends on concurrent access to one of them.
+        [previewController stop];
+
+        completionHandler(shouldAllow, selectedAudioDeviceUID.get(), selectedVideoDeviceUID.get());
+    });
+
+    [alert beginSheetModalForWindow:retainPtr([webView window]).get() completionHandler:completionBlock.get()];
+}
+
+#endif // PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
 
 
 

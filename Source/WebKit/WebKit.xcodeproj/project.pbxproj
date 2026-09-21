@@ -1124,6 +1124,7 @@
 		41897ED11F415D680016FA42 /* WebCacheStorageConnection.h in Headers */ = {isa = PBXBuildFile; fileRef = 41897ECD1F415D5C0016FA42 /* WebCacheStorageConnection.h */; };
 		4193927828BE41C000162139 /* LSApplicationWorkspaceSPI.h in Headers */ = {isa = PBXBuildFile; fileRef = 4193927728BE41C000162139 /* LSApplicationWorkspaceSPI.h */; };
 		41A0EB142641714900794471 /* LibWebRTCCodecsProxy.mm in Sources */ = {isa = PBXBuildFile; fileRef = 41E0A7C823B6397900561060 /* LibWebRTCCodecsProxy.mm */; };
+		41B7E9A92E7B41C700D5A1F2 /* CapturePreview in Resources */ = {isa = PBXBuildFile; fileRef = 41B7E9A82E7B41C700D5A1F2 /* CapturePreview */; };
 		41C5379021F15B55008B1FAD /* _WKWebsiteDataStoreDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 41C5378F21F1362D008B1FAD /* _WKWebsiteDataStoreDelegate.h */; settings = {ATTRIBUTES = (Private, ); }; };
 		41D129DA1F3D101800D15E47 /* WebCacheStorageProvider.h in Headers */ = {isa = PBXBuildFile; fileRef = 41D129D91F3D101400D15E47 /* WebCacheStorageProvider.h */; };
 		41DC45961E3D6E2200B11F51 /* NetworkRTCProvider.h in Headers */ = {isa = PBXBuildFile; fileRef = 41DC45941E3D6E1E00B11F51 /* NetworkRTCProvider.h */; };
@@ -5768,6 +5769,11 @@
 		41AC86811E042E5300303074 /* WebRTCResolver.messages.in */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; lineEnding = 0; name = WebRTCResolver.messages.in; path = Network/webrtc/WebRTCResolver.messages.in; sourceTree = "<group>"; xcLanguageSpecificationIdentifier = "<none>"; };
 		41B28B081F83AD3E00FB52AC /* RTCPacketOptions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RTCPacketOptions.h; sourceTree = "<group>"; };
 		41B28B091F83AD3E00FB52AC /* RTCPacketOptions.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = RTCPacketOptions.cpp; sourceTree = "<group>"; };
+		41B7E9A42E7B41C700D5A1F2 /* WKCapturePreviewURLSchemeHandler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WKCapturePreviewURLSchemeHandler.h; sourceTree = "<group>"; };
+		41B7E9A52E7B41C700D5A1F2 /* WKCapturePreviewURLSchemeHandler.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = WKCapturePreviewURLSchemeHandler.mm; sourceTree = "<group>"; };
+		41B7E9A62E7B41C700D5A1F2 /* WKCapturePreviewViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WKCapturePreviewViewController.h; sourceTree = "<group>"; };
+		41B7E9A72E7B41C700D5A1F2 /* WKCapturePreviewViewController.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = WKCapturePreviewViewController.mm; sourceTree = "<group>"; };
+		41B7E9A82E7B41C700D5A1F2 /* CapturePreview */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CapturePreview; path = UIProcess/Resources/CapturePreview; sourceTree = "<group>"; };
 		41B7ED6C20681DCE0087D853 /* WebMDNSRegister.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebMDNSRegister.h; path = Network/webrtc/WebMDNSRegister.h; sourceTree = "<group>"; };
 		41B7ED6E20681DCF0087D853 /* WebMDNSRegister.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = WebMDNSRegister.cpp; path = Network/webrtc/WebMDNSRegister.cpp; sourceTree = "<group>"; };
 		41B7ED6F206965900087D853 /* NetworkMDNSRegister.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = NetworkMDNSRegister.cpp; sourceTree = "<group>"; };
@@ -10033,6 +10039,7 @@
 		089C1665FE841158C02AAC07 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				41B7E9A82E7B41C700D5A1F2 /* CapturePreview */,
 				EBF4E3292C2E0E0B00FAC85C /* cocoa */,
 				372887982000AA3700F4EF5D /* ios */,
 				6BE969BF1E54D452008B7483 /* ResourceLoadStatistics */,
@@ -11047,6 +11054,10 @@
 				1A04F6171A4A3A7A00A21B6E /* WebProcessProxyCocoa.mm */,
 				51D124311E6DE521002B2820 /* WebURLSchemeHandlerCocoa.h */,
 				51D124321E6DE521002B2820 /* WebURLSchemeHandlerCocoa.mm */,
+				41B7E9A42E7B41C700D5A1F2 /* WKCapturePreviewURLSchemeHandler.h */,
+				41B7E9A52E7B41C700D5A1F2 /* WKCapturePreviewURLSchemeHandler.mm */,
+				41B7E9A62E7B41C700D5A1F2 /* WKCapturePreviewViewController.h */,
+				41B7E9A72E7B41C700D5A1F2 /* WKCapturePreviewViewController.mm */,
 				F43019662DC97AAE006522E0 /* WKColorExtensionView.h */,
 				F43019672DC97AAE006522E0 /* WKColorExtensionView.mm */,
 				E596DD68251E71D300C275A7 /* WKContactPicker.h */,
@@ -20671,6 +20682,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				41B7E9A92E7B41C700D5A1F2 /* CapturePreview in Resources */,
 				E17AE2C316B9C63A001C42F2 /* com.apple.WebKit.GPUProcess.sb in Resources */,
 				E17AE2C316B9C63A001C42F1 /* com.apple.WebKit.NetworkProcess.sb in Resources */,
 				EB7D252B27B31B77009CB586 /* com.apple.WebKit.webpushd.mac.sb in Resources */,

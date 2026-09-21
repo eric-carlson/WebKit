@@ -167,6 +167,14 @@ private:
     bool hasGrantedRequest(std::optional<WebCore::FrameIdentifier>, const WebCore::SecurityOrigin& userMediaDocumentOrigin, const WebCore::SecurityOrigin& topLevelDocumentOrigin, bool needsAudio, bool needsVideo, bool isUserGesturePriviledged) const;
     bool wasRequestDenied(const UserMediaPermissionRequestProxy&, bool needsAudio, bool needsVideo, bool needsScreenCapture);
 
+#if ENABLE(MEDIA_STREAM)
+    struct PreviouslySelectedDeviceIDs {
+        String audioDeviceUID;
+        String videoDeviceUID;
+    };
+    PreviouslySelectedDeviceIDs previouslySelectedDeviceIDs(const UserMediaPermissionRequestProxy&) const;
+#endif
+
     void getUserMediaPermissionInfo(WebCore::FrameIdentifier, Ref<WebCore::SecurityOrigin>&& userMediaDocumentOrigin, Ref<WebCore::SecurityOrigin>&& topLevelDocumentOrigin, CompletionHandler<void(WebCore::PermissionState, WebCore::PermissionState)>&&);
     void captureDevicesChanged(bool hasCameraPersistentAccess, bool hasMicrophonePersistentAccess);
 
@@ -181,7 +189,7 @@ private:
 
     void processUserMediaPermissionRequest();
     void processUserMediaPermissionInvalidRequest(WebCore::MediaConstraintType invalidConstraint);
-    void processUserMediaPermissionValidRequest(Vector<WebCore::CaptureDevice>&& audioDevices, Vector<WebCore::CaptureDevice>&& videoDevices, WebCore::MediaDeviceHashSalts&&);
+    void processUserMediaPermissionValidRequest(WebCore::RealtimeMediaSourceCenter::ValidDevices&&, WebCore::MediaDeviceHashSalts&&);
     void startProcessingUserMediaPermissionRequest(Ref<UserMediaPermissionRequestProxy>&&);
 
     static void requestSystemValidation(const WebPageProxy&, UserMediaPermissionRequestProxy&, CompletionHandler<void(bool)>&&);

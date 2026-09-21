@@ -25,8 +25,10 @@
 
 #pragma once
 
+#include <WebCore/CaptureDevice.h>
 #include <WebCore/SecurityOriginData.h>
 #include <wtf/CompletionHandler.h>
+#include <wtf/Function.h>
 #include <wtf/Vector.h>
 
 #if PLATFORM(COCOA)
@@ -73,6 +75,11 @@ void alertForPermission(WebPageProxy&, MediaPermissionReason, const WebCore::Sec
 
 void requestAVCaptureAccessForType(MediaPermissionType, CompletionHandler<void(bool authorized)>&&);
 MediaPermissionResult checkAVCaptureAccessForType(MediaPermissionType);
+#endif
+
+#if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
+using CapturePreviewDeviceListUpdater = Function<void(Vector<WebCore::CaptureDevice>&& videoDevices, Vector<WebCore::CaptureDevice>&& audioDevices)>;
+void alertForPermissionWithCapturePreview(WebPageProxy&, MediaPermissionReason, const WebCore::SecurityOriginData&, Vector<WebCore::CaptureDevice>&& eligibleVideoDevices, Vector<WebCore::CaptureDevice>&& eligibleAudioDevices, CompletionHandler<void(bool granted, String selectedAudioDeviceUID, String selectedVideoDeviceUID)>&&, CapturePreviewDeviceListUpdater&);
 #endif
 
 #if HAVE(SPEECHRECOGNIZER)

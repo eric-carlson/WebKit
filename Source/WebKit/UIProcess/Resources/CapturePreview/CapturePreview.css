@@ -1,0 +1,151 @@
+/*
+ * Copyright (C) 2026 Apple Inc. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+ * THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+:root {
+    color-scheme: light dark;
+    --group-gap: 12px;
+    --control-gap: 8px;
+    --corner-radius: 6px;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font: caption;
+    -webkit-user-select: none;
+    cursor: default;
+    overflow: hidden;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--group-gap);
+}
+
+.group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--control-gap);
+}
+
+.group[hidden] {
+    display: none;
+}
+
+#video-frame {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: var(--corner-radius);
+    overflow: hidden;
+    background: Canvas;
+}
+
+#preview {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* Frames take a noticeable moment to arrive, and an empty black rectangle reads as broken. */
+#video-frame.loading #preview {
+    visibility: hidden;
+}
+
+#spinner {
+    position: absolute;
+    inset: 0;
+    display: none;
+    place-items: center;
+}
+
+#video-frame.loading #spinner {
+    display: grid;
+}
+
+#spinner::before {
+    content: "";
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 3px solid color-mix(in srgb, CanvasText 20%, transparent);
+    border-top-color: color-mix(in srgb, CanvasText 70%, transparent);
+    animation: capture-preview-spin 0.8s linear infinite;
+}
+
+@keyframes capture-preview-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #spinner::before {
+        animation-duration: 2.4s;
+    }
+}
+
+#preview-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: AccentColor;
+    color: AccentColorText;
+    font-size: 0.85em;
+}
+
+#preview-badge:empty {
+    display: none;
+}
+
+#meter {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: color-mix(in srgb, CanvasText 15%, transparent);
+    overflow: hidden;
+}
+
+#meter-fill {
+    width: 0;
+    height: 100%;
+    background: AccentColor;
+    /* Fast attack, slow release, so brief peaks stay visible. */
+    transition: width 60ms linear;
+}
+
+select {
+    font: inherit;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+select[hidden] {
+    display: none;
+}

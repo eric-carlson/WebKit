@@ -2854,6 +2854,16 @@ function(WEBKIT_DEFINE_XPC_SERVICES)
     add_custom_target(WebContentProcessNib ALL DEPENDS ${WebKit_XPC_SERVICE_DIR}/com.apple.WebKit.WebContent.xpc/Contents/Resources/WebContentProcess.nib)
     add_dependencies(WebKit WebContentProcessNib)
 
+    add_custom_command(OUTPUT ${WebKit_RESOURCES_DIR}/CapturePreview COMMAND
+        ${CMAKE_COMMAND} -E copy_directory ${WEBKIT_DIR}/UIProcess/Resources/CapturePreview ${WebKit_RESOURCES_DIR}/CapturePreview
+        DEPENDS
+            ${WEBKIT_DIR}/UIProcess/Resources/CapturePreview/CapturePreview.html
+            ${WEBKIT_DIR}/UIProcess/Resources/CapturePreview/CapturePreview.css
+            ${WEBKIT_DIR}/UIProcess/Resources/CapturePreview/CapturePreview.js
+        VERBATIM)
+    add_custom_target(WebKitCapturePreviewResources ALL DEPENDS ${WebKit_RESOURCES_DIR}/CapturePreview)
+    add_dependencies(WebKit WebKitCapturePreviewResources)
+
     add_custom_command(OUTPUT ${WebKit_RESOURCES_DIR}/TextExtractionFilter.mlmodel COMMAND
         ${CMAKE_COMMAND} -E copy_if_different ${WEBKIT_DIR}/Resources/TextExtractionFilter.mlmodel ${WebKit_RESOURCES_DIR}/TextExtractionFilter.mlmodel
         VERBATIM)

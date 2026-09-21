@@ -327,6 +327,14 @@ std::expected<RealtimeMediaSourceCenter::ValidDevices, MediaConstraintType> Real
         }
     } sortBasedOnFitnessScore;
 
+    // Counts the devices tied for the best match, which a sorted list holds as a prefix.
+    auto bestMatchingDeviceCount = [](const Vector<DeviceInfo>& deviceInfo) {
+        double bestFitnessScore = deviceInfo[0].fitnessScore;
+        return static_cast<unsigned>(std::ranges::count_if(deviceInfo, [&](auto& info) {
+            return info.fitnessScore == bestFitnessScore;
+        }));
+    };
+
     Vector<DeviceInfo> audioDeviceInfo;
     Vector<DeviceInfo> videoDeviceInfo;
     MediaConstraintType firstInvalidConstraint = MediaConstraintType::Unknown;
@@ -352,22 +360,26 @@ std::expected<RealtimeMediaSourceCenter::ValidDevices, MediaConstraintType> Real
     }
 
     Vector<CaptureDevice> audioDevices;
+    unsigned bestMatchingAudioDeviceCount = 0;
     if (!audioDeviceInfo.isEmpty()) {
         std::ranges::stable_sort(audioDeviceInfo, sortBasedOnFitnessScore);
+        bestMatchingAudioDeviceCount = bestMatchingDeviceCount(audioDeviceInfo);
         audioDevices = WTF::map(audioDeviceInfo, [] (auto& info) {
             return info.device;
         });
     }
 
     Vector<CaptureDevice> videoDevices;
+    unsigned bestMatchingVideoDeviceCount = 0;
     if (!videoDeviceInfo.isEmpty()) {
         std::ranges::stable_sort(videoDeviceInfo, sortBasedOnFitnessScore);
+        bestMatchingVideoDeviceCount = bestMatchingDeviceCount(videoDeviceInfo);
         videoDevices = WTF::map(videoDeviceInfo, [] (auto& info) {
             return info.device;
         });
     }
 
-    return ValidDevices { WTF::move(audioDevices), WTF::move(videoDevices) };
+    return ValidDevices { WTF::move(audioDevices), WTF::move(videoDevices), bestMatchingAudioDeviceCount, bestMatchingVideoDeviceCount };
 }
 
 void RealtimeMediaSourceCenter::setAudioCaptureFactory(AudioCaptureFactory& factory)
