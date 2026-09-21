@@ -28,6 +28,7 @@
     ExceptionForEnabledBy
 ]
 messages -> GPUProcessProxy {
+    CapturePreviewAudioLevelChanged(float level)
 
 #if HAVE(VISIBILITY_PROPAGATION_VIEW)
     DidCreateContextForVisibilityPropagation(WebKit::WebPageProxyIdentifier pageProxyID, WebCore::PageIdentifier pageID, WebKit::LayerHostingContextID contextID)

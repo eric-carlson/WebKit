@@ -29,6 +29,7 @@
 
 #include <WebCore/AudioSession.h>
 #include <WebCore/ProcessIdentifier.h>
+#include <wtf/CompletionHandler.h>
 #include <wtf/TZoneMalloc.h>
 #include <wtf/WeakHashSet.h>
 #include <wtf/WeakRef.h>
@@ -62,6 +63,9 @@ public:
     void updatePreferredBufferSizeForProcess();
     void updateSpatialExperience();
 
+    void beginCapturePreview(CompletionHandler<void()>&&);
+    void endCapturePreview();
+
     Ref<WebCore::AudioSession::SetActivePromise> tryToSetActiveForProcess(RemoteAudioSessionProxy&, bool);
 
     void beginInterruptionRemote();
@@ -86,10 +90,12 @@ private:
     void configurationDidChange(const WebCore::AudioSession&);
 
     bool hasOtherActiveProxyThan(RemoteAudioSessionProxy& proxyToExclude);
+    bool hasActiveProxy();
     bool hasActiveNotInterruptedProxy();
 
     WeakRef<GPUProcess> m_gpuProcess;
     WeakHashSet<RemoteAudioSessionProxy> m_proxies;
+    bool m_capturePreviewActive { false };
 };
 
 }

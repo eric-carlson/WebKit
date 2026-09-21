@@ -30,6 +30,10 @@
 #include <wtf/Vector.h>
 #include <wtf/text/WTFString.h>
 
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+#include "MediaPermissionUtilities.h"
+#endif
+
 namespace WebCore {
 class SecurityOrigin;
 }
@@ -46,7 +50,15 @@ public:
 
     void allow(const String& audioDeviceUID, const String& videoDeviceUID);
     void allow();
+    void preferDevices(const String& audioDeviceUID, const String& videoDeviceUID, unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount);
+#if ENABLE(MEDIA_STREAM)
+    void reapplyDeviceSelection(unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount);
+#endif
     void promptForGetUserMedia();
+
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+    void devicesChanged();
+#endif
 
     enum class UserMediaDisplayCapturePromptType { Window, Screen, UserChoose };
     virtual void promptForGetDisplayMedia(UserMediaDisplayCapturePromptType);
@@ -123,6 +135,15 @@ private:
     WebCore::MediaDeviceHashSalts m_deviceIdentifierHashSalts;
     CompletionHandler<void(bool)> m_decisionCompletionHandler;
     Function<void()> m_beforeStartingCaptureCallback;
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+    CapturePreviewDeviceListUpdater m_previewDeviceListUpdater;
+    CapturePreviewPromptDismisser m_previewPromptDismisser;
+#endif
+#if ENABLE(MEDIA_STREAM)
+    String m_selectedAudioDeviceUID;
+    String m_selectedVideoDeviceUID;
+    bool m_deviceSelectionWasExplicit { false };
+#endif
 };
 
 String convertEnumerationToString(UserMediaPermissionRequestProxy::UserMediaAccessDenialReason);
