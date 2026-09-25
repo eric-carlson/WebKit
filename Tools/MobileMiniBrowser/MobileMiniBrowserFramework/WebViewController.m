@@ -31,9 +31,13 @@
 #import <WebKit/WKNavigationDelegate.h>
 #import <WebKit/WKPreferencesPrivate.h>
 #import <WebKit/WKProcessPoolPrivate.h>
+#import <WebKit/WKSecurityOrigin.h>
+#import <WebKit/WKUIDelegate.h>
 #import <WebKit/WKWebView.h>
 #import <WebKit/WKWebViewConfiguration.h>
+#import <WebKit/WKWebViewPrivate.h>
 #import <WebKit/WKWebsiteDataStorePrivate.h>
+#import <WebKit/_WKMediaCapturePermissionPromptConfiguration.h>
 #import <WebKit/_WKProcessPoolConfiguration.h>
 #import <WebKit/_WKWebsiteDataStoreConfiguration.h>
 
@@ -61,7 +65,7 @@ static const NSString * const kURLArgumentString = @"--url";
 }
 @end
 
-@interface WebViewController () <WKNavigationDelegate> {
+@interface WebViewController () <WKNavigationDelegate, WKUIDelegate> {
     WKWebsiteDataStore *_dataStore;
     WKWebView *_currentWebView;
     NSURL *_initialURL;
@@ -218,7 +222,6 @@ void* URLContext = &URLContext;
 {
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
 
-    configuration.preferences._mockCaptureDevicesEnabled = YES;
     configuration.preferences._notificationsEnabled = YES;
     configuration.preferences._pushAPIEnabled = YES;
     configuration.preferences._notificationEventEnabled = YES;
@@ -237,6 +240,7 @@ void* URLContext = &URLContext;
     WKWebView *webView = [[WKWebView alloc] initWithFrame:self.webViewContainer.bounds configuration:configuration];
     webView.inspectable = YES;
     webView.navigationDelegate = self;
+    webView.UIDelegate = self;
     webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [webView addObserver:self forKeyPath:@"title" options:NSKeyValueObservingOptionNew context:TitleContext];
     [self.webViews addObject:webView];
@@ -244,6 +248,45 @@ void* URLContext = &URLContext;
     [self.tabViewController.tableView reloadData];
 
     return webView;
+}
+
+// Origins this browser was told never to ask about again. WebKit keeps no such store, so an
+// application offering that choice has to remember it and answer later requests itself.
+static NSMutableSet<NSString *> *originsDeniedCapture(void)
+{
+    static NSMutableSet<NSString *> *origins;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        origins = [[NSMutableSet alloc] init];
+    });
+    return origins;
+}
+
+- (void)webView:(WKWebView *)webView requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin initiatedByFrame:(WKFrameInfo *)frame type:(WKMediaCaptureType)type decisionHandler:(void (^)(WKPermissionDecision))decisionHandler
+{
+    NSString *originKey = [NSString stringWithFormat:@"%@://%@:%ld", origin.protocol, origin.host, (long)origin.port];
+    if ([originsDeniedCapture() containsObject:originKey]) {
+        decisionHandler(WKPermissionDecisionDeny);
+        return;
+    }
+
+    _WKMediaCapturePermissionPromptConfiguration *configuration = [[_WKMediaCapturePermissionPromptConfiguration alloc] init];
+    _WKMediaCapturePermissionAction *neverAllow = [_WKMediaCapturePermissionAction actionWithTitle:@"Never for This Website" decision:_WKMediaCapturePermissionActionDecisionDeny];
+    _WKMediaCapturePermissionAction *allowOnce = [_WKMediaCapturePermissionAction actionWithTitle:@"Allow This Time" decision:_WKMediaCapturePermissionActionDecisionAllow];
+    configuration.additionalActions = @[ neverAllow, allowOnce ];
+
+    [webView _showMediaCapturePermissionPromptWithConfiguration:configuration completionHandler:^(_WKMediaCapturePermissionPromptResult *result) {
+        // Compared by identity rather than by title, which is what the SPI guarantees.
+        if (result.chosenAction == neverAllow)
+            [originsDeniedCapture() addObject:originKey];
+
+        NSLog(@"Capture prompt for %@: %@%@, camera = %@, microphone = %@", originKey,
+            result.outcome == _WKMediaCapturePermissionPromptOutcomeAllowed ? @"allowed" : @"denied",
+            result.chosenAction ? [NSString stringWithFormat:@" via \"%@\"", result.chosenAction.title] : @"",
+            result.cameraDeviceID ?: @"(none)", result.microphoneDeviceID ?: @"(none)");
+
+        decisionHandler(result.outcome == _WKMediaCapturePermissionPromptOutcomeAllowed ? WKPermissionDecisionGrant : WKPermissionDecisionDeny);
+    }];
 }
 
 - (void)removeWebView:(WKWebView *)webView

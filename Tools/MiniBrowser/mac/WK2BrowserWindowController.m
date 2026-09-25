@@ -46,6 +46,7 @@
 #import <WebKit/WKUIDelegatePrivate.h>
 #import <WebKit/WKWebViewConfigurationPrivate.h>
 #import <WebKit/WKWebViewPrivate.h>
+#import <WebKit/_WKMediaCapturePermissionPromptConfiguration.h>
 #import <WebKit/WKWebViewPrivateForTesting.h>
 #import <WebKit/WKWebpagePreferences.h>
 #import <WebKit/WKWebpagePreferencesPrivate.h>
@@ -819,6 +820,45 @@ static BOOL areEssentiallyEqual(double a, double b)
     [[[NSApplication sharedApplication] browserAppDelegate] didCreateBrowserWindowController:controller];
 
     return controller->_webView;
+}
+
+// Origins this browser was told never to ask about again. WebKit keeps no such store, so an
+// application offering that choice has to remember it and answer later requests itself.
+static NSMutableSet<NSString *> *originsDeniedCapture(void)
+{
+    static NSMutableSet<NSString *> *origins;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        origins = [[NSMutableSet alloc] init];
+    });
+    return origins;
+}
+
+- (void)webView:(WKWebView *)webView requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin initiatedByFrame:(WKFrameInfo *)frame type:(WKMediaCaptureType)type decisionHandler:(void (^)(WKPermissionDecision))decisionHandler
+{
+    NSString *originKey = [NSString stringWithFormat:@"%@://%@:%ld", origin.protocol, origin.host, (long)origin.port];
+    if ([originsDeniedCapture() containsObject:originKey]) {
+        decisionHandler(WKPermissionDecisionDeny);
+        return;
+    }
+
+    _WKMediaCapturePermissionPromptConfiguration *configuration = [[_WKMediaCapturePermissionPromptConfiguration alloc] init];
+    _WKMediaCapturePermissionAction *neverAllow = [_WKMediaCapturePermissionAction actionWithTitle:@"Never for This Website" decision:_WKMediaCapturePermissionActionDecisionDeny];
+    _WKMediaCapturePermissionAction *allowOnce = [_WKMediaCapturePermissionAction actionWithTitle:@"Allow This Time" decision:_WKMediaCapturePermissionActionDecisionAllow];
+    configuration.additionalActions = @[ neverAllow, allowOnce ];
+
+    [webView _showMediaCapturePermissionPromptWithConfiguration:configuration completionHandler:^(_WKMediaCapturePermissionPromptResult *result) {
+        // Compared by identity rather than by title, which is what the SPI guarantees.
+        if (result.chosenAction == neverAllow)
+            [originsDeniedCapture() addObject:originKey];
+
+        NSLog(@"Capture prompt for %@: %@%@, camera = %@, microphone = %@", originKey,
+            result.outcome == _WKMediaCapturePermissionPromptOutcomeAllowed ? @"allowed" : @"denied",
+            result.chosenAction ? [NSString stringWithFormat:@" via \"%@\"", result.chosenAction.title] : @"",
+            result.cameraDeviceID ?: @"(none)", result.microphoneDeviceID ?: @"(none)");
+
+        decisionHandler(result.outcome == _WKMediaCapturePermissionPromptOutcomeAllowed ? WKPermissionDecisionGrant : WKPermissionDecisionDeny);
+    }];
 }
 
 - (void)webView:(WKWebView *)webView runJavaScriptAlertPanelWithMessage:(NSString *)message initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(void))completionHandler

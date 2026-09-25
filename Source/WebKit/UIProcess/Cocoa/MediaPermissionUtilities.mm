@@ -76,6 +76,10 @@ constexpr CGFloat previewBadgeVerticalPadding = 2;
 constexpr CGFloat previewBadgeCornerRadius = 100;
 constexpr CGFloat sectionBandThickness = 8;
 constexpr CGFloat sectionBandCornerRadius = sectionCornerRadius + sectionBandThickness;
+constexpr CGFloat promptSheetInset = 20;
+constexpr CGFloat promptSheetSpacing = 16;
+constexpr CGFloat promptSheetButtonSpacing = 8;
+constexpr CGFloat promptSheetMinimumContentWidth = 260;
 
 // NSStackView only aligns its views; it does not make them share the stack's width, and its default
 // distribution spreads them apart rather than packing them at the spacing.
@@ -328,8 +332,8 @@ static void pinToWidthOfStack(NSView *view, NSStackView *stack)
 
     _view = adoptNS([[NSView alloc] initWithFrame:NSZeroRect]);
     [_view addSubview:contentStack.get()];
-    // Centred rather than pinned to the sides, because NSAlert widens its accessory view to the
-    // width the message text needs, which is wider than the preview.
+    // Centred rather than pinned to the sides, because the prompt can be wider than the preview: a
+    // long message, or a microphone-only request, which has no preview to set the width.
     [NSLayoutConstraint activateConstraints:@[
         [[contentStack topAnchor] constraintEqualToAnchor:[_view topAnchor]],
         [[contentStack bottomAnchor] constraintEqualToAnchor:[_view bottomAnchor]],
@@ -558,6 +562,110 @@ static void pinToWidthOfStack(NSView *view, NSStackView *stack)
 
 @end
 
+// NSAlert decides for itself whether its buttons sit side by side or stacked, and puts two side by
+// side. This sheet always stacks them, so buttons the application adds line up with Allow and Don't
+// Allow. Each button ends the sheet with the response NSAlert would have given it.
+@interface WKCapturePreviewPromptSheet : NSObject {
+    RetainPtr<NSString> _messageText;
+    RetainPtr<NSView> _accessoryView;
+    RetainPtr<NSStackView> _buttonStack;
+    RetainPtr<NSPanel> _window;
+}
+
+- (instancetype)initWithMessageText:(NSString *)messageText accessoryView:(NSView *)accessoryView;
+// Buttons are stacked top to bottom in the order they are added.
+- (NSButton *)addButtonWithTitle:(NSString *)title response:(NSModalResponse)response;
+- (NSWindow *)window;
+- (void)beginSheetModalForWindow:(NSWindow *)parentWindow completionHandler:(void (^)(NSModalResponse))completionHandler;
+
+@end
+
+@implementation WKCapturePreviewPromptSheet
+
+- (instancetype)initWithMessageText:(NSString *)messageText accessoryView:(NSView *)accessoryView
+{
+    if (!(self = [super init]))
+        return nil;
+
+    _messageText = messageText;
+    _accessoryView = accessoryView;
+
+    _buttonStack = adoptNS([[NSStackView alloc] init]);
+    [_buttonStack setOrientation:NSUserInterfaceLayoutOrientationVertical];
+    [_buttonStack setDistribution:NSStackViewDistributionFill];
+    [_buttonStack setSpacing:promptSheetButtonSpacing];
+    [_buttonStack setTranslatesAutoresizingMaskIntoConstraints:NO];
+
+    return self;
+}
+
+- (NSButton *)addButtonWithTitle:(NSString *)title response:(NSModalResponse)response
+{
+    RetainPtr button = [NSButton buttonWithTitle:title target:self action:@selector(_buttonClicked:)];
+    [button setTag:response];
+    [button setKeyEquivalent:@""];
+    [button setControlSize:NSControlSizeLarge];
+    [button setTranslatesAutoresizingMaskIntoConstraints:NO];
+    [_buttonStack addArrangedSubview:button.get()];
+    pinToWidthOfStack(button.get(), _buttonStack.get());
+    return button.autorelease();
+}
+
+- (NSWindow *)window
+{
+    return _window.get();
+}
+
+- (void)beginSheetModalForWindow:(NSWindow *)parentWindow completionHandler:(void (^)(NSModalResponse))completionHandler
+{
+    // An audio-only chooser has no intrinsic width, so the sheet sets a minimum.
+    CGFloat contentWidth = std::max(promptSheetMinimumContentWidth, NSWidth([_accessoryView frame]));
+
+    RetainPtr messageLabel = [NSTextField wrappingLabelWithString:_messageText.get()];
+    [messageLabel setFont:[NSFont boldSystemFontOfSize:[NSFont systemFontSize]]];
+    [messageLabel setSelectable:NO];
+    // Without this the label measures as one line, and the sheet is sized too short to show it.
+    [messageLabel setPreferredMaxLayoutWidth:contentWidth];
+    [messageLabel setTranslatesAutoresizingMaskIntoConstraints:NO];
+
+    [_accessoryView setTranslatesAutoresizingMaskIntoConstraints:NO];
+
+    RetainPtr contentStack = adoptNS([[NSStackView alloc] init]);
+    [contentStack setOrientation:NSUserInterfaceLayoutOrientationVertical];
+    [contentStack setDistribution:NSStackViewDistributionFill];
+    [contentStack setSpacing:promptSheetSpacing];
+    [contentStack setTranslatesAutoresizingMaskIntoConstraints:NO];
+    for (NSView *view in @[ messageLabel.get(), _accessoryView.get(), _buttonStack.get() ]) {
+        [contentStack addArrangedSubview:view];
+        pinToWidthOfStack(view, contentStack.get());
+    }
+
+    RetainPtr contentView = adoptNS([[NSView alloc] initWithFrame:NSZeroRect]);
+    [contentView addSubview:contentStack.get()];
+    [NSLayoutConstraint activateConstraints:@[
+        [[contentStack topAnchor] constraintEqualToAnchor:[contentView topAnchor] constant:promptSheetInset],
+        [[contentStack bottomAnchor] constraintEqualToAnchor:[contentView bottomAnchor] constant:-promptSheetInset],
+        [[contentStack leadingAnchor] constraintEqualToAnchor:[contentView leadingAnchor] constant:promptSheetInset],
+        [[contentStack trailingAnchor] constraintEqualToAnchor:[contentView trailingAnchor] constant:-promptSheetInset],
+        [[contentStack widthAnchor] constraintEqualToConstant:contentWidth],
+    ]];
+
+    _window = adoptNS([[NSPanel alloc] initWithContentRect:NSZeroRect styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:YES]);
+    [_window setReleasedWhenClosed:NO];
+    [_window setContentView:contentView.get()];
+    [contentView layoutSubtreeIfNeeded];
+    [_window setContentSize:[contentView fittingSize]];
+
+    [parentWindow beginSheet:_window.get() completionHandler:completionHandler];
+}
+
+- (void)_buttonClicked:(NSButton *)sender
+{
+    [[_window sheetParent] endSheet:_window.get() returnCode:[sender tag]];
+}
+
+@end
+
 #endif // PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
 
 namespace WebKit {
@@ -699,8 +807,8 @@ static PermissionPromptResult promptResultForAlertResponse(NSModalResponse retur
     if (returnCode == NSAlertSecondButtonReturn)
         return { .granted = false };
 
-    // Additional actions were added third onward, so the built-in two keep the responses AppKit
-    // documents and an additional action's index falls out of the response.
+    // Additional actions respond third onward wherever they appear, so the built-in two keep the
+    // responses AppKit documents and an additional action's index falls out of the response.
     size_t index = returnCode - NSAlertThirdButtonReturn;
     if (index >= additionalActions.size()) {
         ASSERT_NOT_REACHED();
@@ -763,13 +871,17 @@ void alertForPermission(WebPageProxy& page, PermissionPromptRequest&& request, C
     [alert setMessageText:alertTitle.get()];
     RetainPtr button = [alert addButtonWithTitle:allowButtonString.get()];
     [button setKeyEquivalent:@""];
-    button = [alert addButtonWithTitle:doNotAllowButtonString.get()];
-    [button setKeyEquivalent:@"\E"];
-    for (auto& action : request.customization.additionalActions) {
-        button = [alert addButtonWithTitle:action.title.createNSString().get()];
+    // Added between Allow and Don't Allow, matching the preview prompt's order. Tags keep the
+    // responses promptResultForAlertResponse expects, which would otherwise follow position.
+    for (size_t index = 0; index < request.customization.additionalActions.size(); ++index) {
+        button = [alert addButtonWithTitle:request.customization.additionalActions[index].title.createNSString().get()];
         // Cleared so AppKit does not hand Return to a button the application supplied.
         [button setKeyEquivalent:@""];
+        [button setTag:NSAlertThirdButtonReturn + index];
     }
+    button = [alert addButtonWithTitle:doNotAllowButtonString.get()];
+    [button setKeyEquivalent:@"\E"];
+    [button setTag:NSAlertSecondButtonReturn];
 
     [alert beginSheetModalForWindow:retainPtr([webView window]).get() completionHandler:[completionBlock, additionalActions = WTF::move(request.customization.additionalActions)](NSModalResponse returnCode) {
         completionBlock(promptResultForAlertResponse(returnCode, additionalActions));
@@ -784,7 +896,7 @@ void alertForPermission(WebPageProxy& page, PermissionPromptRequest&& request, C
         completionBlock({ .granted = false });
     }];
 
-    [alert addAction:doNotAllowAction.get()];
+    // Added in the preview prompt's order: Allow, then the application's actions, then Don't Allow.
     [alert addAction:allowAction.get()];
 
     for (size_t index = 0; index < request.customization.additionalActions.size(); ++index) {
@@ -794,6 +906,8 @@ void alertForPermission(WebPageProxy& page, PermissionPromptRequest&& request, C
             completionBlock({ .granted = granted, .chosenAdditionalActionIndex = index });
         }]];
     }
+
+    [alert addAction:doNotAllowAction.get()];
 
 #if PLATFORM(VISION)
     page.dispatchWillPresentModalUI();
@@ -816,7 +930,8 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
     ASSERT(isMainRunLoop());
 
     RetainPtr webView = page.cocoaView();
-    if (!webView) {
+    RetainPtr parentWindow = [webView window];
+    if (!parentWindow) {
         completionHandler({ });
         return { };
     }
@@ -830,23 +945,20 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
 
     RetainPtr chooser = adoptNS([[WKCaptureDeviceChooser alloc] initWithVideoDevices:WTF::move(request.eligibleVideoDevices) audioDevices:WTF::move(request.eligibleAudioDevices)]);
 
-    RetainPtr alert = adoptNS([NSAlert new]);
-    [alert setMessageText:alertTitle.get()];
-    RetainPtr allowButton = [alert addButtonWithTitle:promptAllowButtonText(textRequest).get()];
-    [allowButton setKeyEquivalent:@""];
-    RetainPtr denyButton = [alert addButtonWithTitle:promptDenyButtonText(textRequest).get()];
-    [denyButton setKeyEquivalent:@"\E"];
+    RetainPtr sheet = adoptNS([[WKCapturePreviewPromptSheet alloc] initWithMessageText:alertTitle.get() accessoryView:[chooser view]]);
+    RetainPtr allowButton = [sheet addButtonWithTitle:promptAllowButtonText(textRequest).get() response:NSAlertFirstButtonReturn];
 
     RetainPtr allowButtons = adoptNS([[NSMutableArray alloc] initWithObjects:allowButton.get(), nil]);
-    for (auto& action : request.customization.additionalActions) {
-        RetainPtr additionalButton = [alert addButtonWithTitle:action.title.createNSString().get()];
-        // Cleared so AppKit does not hand Return to a button the application supplied.
-        [additionalButton setKeyEquivalent:@""];
+    for (size_t index = 0; index < request.customization.additionalActions.size(); ++index) {
+        auto& action = request.customization.additionalActions[index];
+        RetainPtr additionalButton = [sheet addButtonWithTitle:action.title.createNSString().get() response:NSAlertThirdButtonReturn + index];
         if (action.decision == MediaPermissionPromptAdditionalAction::Decision::Allow)
             [allowButtons addObject:additionalButton.get()];
     }
 
-    [alert setAccessoryView:[chooser view]];
+    RetainPtr denyButton = [sheet addButtonWithTitle:promptDenyButtonText(textRequest).get() response:NSAlertSecondButtonReturn];
+    [denyButton setKeyEquivalent:@"\E"];
+
     [chooser setAllowButtons:allowButtons.get()];
 
     // The preview is captured and rendered by the GPU process, so the chooser only reports
@@ -871,7 +983,8 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
             });
     }];
 
-    auto completionBlock = makeBlockPtr([completionHandler = WTF::move(completionHandler), chooser, pageForPreview, pageIdentifier = page.webPageIDInMainFrameProcess(), additionalActions = WTF::move(request.customization.additionalActions)](NSModalResponse returnCode) mutable {
+    // Holds the sheet while it is up: it is the target of its own buttons, which do not retain it.
+    auto completionBlock = makeBlockPtr([completionHandler = WTF::move(completionHandler), chooser, sheet, pageForPreview, pageIdentifier = page.webPageIDInMainFrameProcess(), additionalActions = WTF::move(request.customization.additionalActions)](NSModalResponse returnCode) mutable {
         auto outcome = promptResultForAlertResponse(returnCode, additionalActions);
         bool shouldAllow = outcome.granted;
         RetainPtr selectedVideoDeviceID = shouldAllow ? [chooser selectedVideoDeviceID] : nil;
@@ -891,16 +1004,16 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
         });
     });
 
-    [alert beginSheetModalForWindow:retainPtr([webView window]).get() completionHandler:completionBlock.get()];
+    [sheet beginSheetModalForWindow:parentWindow.get() completionHandler:completionBlock.get()];
 
     return {
         .deviceListUpdater = [weakChooser = WeakObjCPtr<WKCaptureDeviceChooser>(chooser.get())](Vector<WebCore::CaptureDevice>&& videoDevices, Vector<WebCore::CaptureDevice>&& audioDevices) mutable {
             [weakChooser.get() updateWithVideoDevices:WTF::move(videoDevices) audioDevices:WTF::move(audioDevices)];
         },
-        .promptDismisser = [alert = WTF::move(alert)] {
+        .promptDismisser = [sheet = WTF::move(sheet)] {
             // Ending the sheet runs completionBlock, which stops the preview and reports the denial.
-            RetainPtr alertWindow = [alert window];
-            [[alertWindow sheetParent] endSheet:alertWindow.get() returnCode:NSAlertSecondButtonReturn];
+            RetainPtr sheetWindow = [sheet window];
+            [[sheetWindow sheetParent] endSheet:sheetWindow.get() returnCode:NSAlertSecondButtonReturn];
         }
     };
 }

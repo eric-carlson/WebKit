@@ -47,6 +47,7 @@ constexpr CGFloat previewAspectRatio = 4.0 / 3.0;
 constexpr CGFloat contentSpacing = 16;
 constexpr CGFloat contentInset = 20;
 constexpr CGFloat decisionButtonSpacing = 28;
+constexpr CGFloat decisionButtonStackSpacing = 8;
 constexpr CGFloat promptCornerRadius = 16;
 constexpr CGFloat previewCornerRadius = 8;
 constexpr CGFloat promptTopMargin = 24;
@@ -327,11 +328,6 @@ static CGFloat previewWidth()
     [_previewContainer setClipsToBounds:YES];
     [[_previewContainer layer] setCornerRadius:previewCornerRadius];
 
-    RetainPtr buttonRow = adoptNS([[UIStackView alloc] init]);
-    [buttonRow setAxis:UILayoutConstraintAxisHorizontal];
-    [buttonRow setDistribution:UIStackViewDistributionFillEqually];
-    [buttonRow setSpacing:contentSpacing];
-
     RetainPtr denyConfiguration = [UIButtonConfiguration grayButtonConfiguration];
     [denyConfiguration setTitle:_denyButtonTitle.get()];
     [denyConfiguration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
@@ -348,8 +344,32 @@ static CGFloat previewWidth()
 
     _allowButtons = adoptNS([[NSMutableArray alloc] initWithObjects:allowButton.get(), nil]);
 
-    [buttonRow addArrangedSubview:denyButton.get()];
-    [buttonRow addArrangedSubview:allowButton.get()];
+    // Stacked rather than side by side, so buttons the application adds line up with Allow and
+    // Don't Allow instead of reading as a separate group.
+    RetainPtr decisionButtons = adoptNS([[UIStackView alloc] init]);
+    [decisionButtons setAxis:UILayoutConstraintAxisVertical];
+    [decisionButtons setSpacing:decisionButtonStackSpacing];
+    [decisionButtons addArrangedSubview:allowButton.get()];
+
+    for (size_t index = 0; index < _additionalActions.size(); ++index) {
+        auto& action = _additionalActions[index];
+        RetainPtr configuration = [UIButtonConfiguration grayButtonConfiguration];
+        [configuration setTitle:action.title.createNSString().get()];
+        [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
+        // A title long enough to need two lines is the case these buttons exist for.
+        [configuration setTitleLineBreakMode:NSLineBreakByWordWrapping];
+
+        RetainPtr additionalAction = [UIAction actionWithTitle:@"" image:nil identifier:nil handler:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self), index](UIAction *) {
+            [weakSelf.get() _activateAdditionalActionAtIndex:index];
+        }];
+        RetainPtr additionalButton = [UIButton buttonWithConfiguration:configuration.get() primaryAction:additionalAction.get()];
+        [decisionButtons addArrangedSubview:additionalButton.get()];
+
+        if (action.decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow)
+            [_allowButtons addObject:additionalButton.get()];
+    }
+
+    [decisionButtons addArrangedSubview:denyButton.get()];
 
     _contentStack = adoptNS([[UIStackView alloc] init]);
     [_contentStack setAxis:UILayoutConstraintAxisVertical];
@@ -422,26 +442,8 @@ static CGFloat previewWidth()
         lastViewBeforeDecisionButtons = microphoneSection;
     }
 
-    [_contentStack addArrangedSubview:buttonRow.get()];
+    [_contentStack addArrangedSubview:decisionButtons.get()];
     [_contentStack setCustomSpacing:decisionButtonSpacing afterView:lastViewBeforeDecisionButtons.get()];
-
-    for (size_t index = 0; index < _additionalActions.size(); ++index) {
-        auto& action = _additionalActions[index];
-        RetainPtr configuration = [UIButtonConfiguration grayButtonConfiguration];
-        [configuration setTitle:action.title.createNSString().get()];
-        [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
-        // A title long enough to need two lines is the case these buttons exist for.
-        [configuration setTitleLineBreakMode:NSLineBreakByWordWrapping];
-
-        RetainPtr additionalAction = [UIAction actionWithTitle:@"" image:nil identifier:nil handler:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self), index](UIAction *) {
-            [weakSelf.get() _activateAdditionalActionAtIndex:index];
-        }];
-        RetainPtr additionalButton = [UIButton buttonWithConfiguration:configuration.get() primaryAction:additionalAction.get()];
-        [_contentStack addArrangedSubview:additionalButton.get()];
-
-        if (action.decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow)
-            [_allowButtons addObject:additionalButton.get()];
-    }
     [[self view] addSubview:_contentStack.get()];
 
     // Pinned to the view rather than its layout margins guide, which would inset the stack by a
