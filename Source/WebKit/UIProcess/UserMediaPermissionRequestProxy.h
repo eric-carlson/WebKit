@@ -31,6 +31,7 @@
 #include <wtf/text/WTFString.h>
 
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+#include "MediaPermissionPromptCustomization.h"
 #include "MediaPermissionUtilities.h"
 #endif
 
@@ -50,6 +51,7 @@ public:
 
     void allow(const String& audioDeviceUID, const String& videoDeviceUID);
     void allow();
+    void applyDeviceSelection(const String& audioDeviceUID, const String& videoDeviceUID);
     void preferDevices(const String& audioDeviceUID, const String& videoDeviceUID, unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount);
 #if ENABLE(MEDIA_STREAM)
     void reapplyDeviceSelection(unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount);
@@ -58,8 +60,10 @@ public:
 
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
     void devicesChanged();
-#endif
 
+    using PromptResultHandler = CompletionHandler<void(bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID)>;
+    void showCapturePromptWithoutDeciding(MediaPermissionPromptCustomization&&, PromptResultHandler&&);
+#endif
     enum class UserMediaDisplayCapturePromptType { Window, Screen, UserChoose };
     virtual void promptForGetDisplayMedia(UserMediaDisplayCapturePromptType);
     virtual bool canRequestDisplayCapturePermission();
@@ -122,6 +126,10 @@ protected:
     UserMediaPermissionRequestManagerProxy* NODELETE manager() const;
 
 private:
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+    void showCapturePrompt(MediaPermissionPromptCustomization&&, PromptResultHandler&&);
+#endif
+
     WeakPtr<UserMediaPermissionRequestManagerProxy> m_manager;
     Markable<WebCore::UserMediaRequestIdentifier> m_userMediaID;
     WebCore::FrameIdentifier m_mainFrameID;

@@ -1603,6 +1603,7 @@ list(APPEND WebKit_PRIVATE_FRAMEWORK_HEADERS
     UIProcess/API/Cocoa/_WKInputDelegate.h
     UIProcess/API/Cocoa/_WKInspector.h
     UIProcess/API/Cocoa/_WKInspectorConfiguration.h
+    UIProcess/API/Cocoa/_WKMediaCapturePermissionPromptConfiguration.h
     UIProcess/API/Cocoa/_WKInspectorDebuggableInfo.h
     UIProcess/API/Cocoa/_WKInspectorDelegate.h
     UIProcess/API/Cocoa/_WKInspectorExtension.h

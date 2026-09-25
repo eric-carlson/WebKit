@@ -15584,6 +15584,13 @@ void WebPageProxy::clearUserMediaPermissionRequestHistory(WebCore::PermissionNam
         protectedUserMediaPermissionRequestManager->clearUserMediaPermissionRequestHistory(name);
 }
 
+#if PLATFORM(COCOA)
+void WebPageProxy::showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&& customization, CompletionHandler<void(bool, std::optional<size_t>, String, String)>&& completionHandler)
+{
+    protect(userMediaPermissionRequestManager())->showMediaCapturePermissionPrompt(WTF::move(customization), WTF::move(completionHandler));
+}
+#endif
+
 void WebPageProxy::setMockCaptureDevicesEnabledOverride(std::optional<bool> enabled)
 {
     protect(userMediaPermissionRequestManager())->setMockCaptureDevicesEnabledOverride(enabled);

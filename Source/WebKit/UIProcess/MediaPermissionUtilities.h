@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include "MediaPermissionPromptCustomization.h"
 #include <WebCore/CaptureDevice.h>
 #include <WebCore/SecurityOriginData.h>
 #include <wtf/CompletionHandler.h>
@@ -71,6 +72,19 @@ bool checkUsageDescriptionStringForSpeechRecognition();
 
 RetainPtr<NSString> applicationVisibleNameFromOrigin(const WebCore::SecurityOriginData&);
 RetainPtr<NSString> applicationVisibleName();
+
+struct PermissionPromptRequest {
+    MediaPermissionReason reason;
+    WebCore::SecurityOriginData origin;
+    MediaPermissionPromptCustomization customization;
+};
+
+struct PermissionPromptResult {
+    bool granted { false };
+    std::optional<size_t> chosenAdditionalActionIndex;
+};
+
+void alertForPermission(WebPageProxy&, PermissionPromptRequest&&, CompletionHandler<void(PermissionPromptResult&&)>&&);
 void alertForPermission(WebPageProxy&, MediaPermissionReason, const WebCore::SecurityOriginData&, CompletionHandler<void(bool)>&&);
 
 void requestAVCaptureAccessForType(MediaPermissionType, CompletionHandler<void(bool authorized)>&&);
@@ -86,12 +100,14 @@ struct CapturePreviewPromptRequest {
     WebCore::SecurityOriginData origin;
     Vector<WebCore::CaptureDevice> eligibleVideoDevices;
     Vector<WebCore::CaptureDevice> eligibleAudioDevices;
+    MediaPermissionPromptCustomization customization;
 };
 
 struct CapturePreviewPromptResult {
     bool granted { false };
     String selectedAudioDeviceUID;
     String selectedVideoDeviceUID;
+    std::optional<size_t> chosenAdditionalActionIndex;
 };
 
 struct CapturePreviewPromptHandles {

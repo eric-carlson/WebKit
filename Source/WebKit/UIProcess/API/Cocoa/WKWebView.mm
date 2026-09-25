@@ -147,6 +147,7 @@
 #import "_WKHitTestResultInternal.h"
 #import "_WKInputDelegate.h"
 #import "_WKInspectorInternal.h"
+#import "_WKMediaCapturePermissionPromptConfigurationInternal.h"
 #import "_WKPageLoadTimingInternal.h"
 #import "_WKRemoteObjectRegistryInternal.h"
 #import "_WKSessionStateInternal.h"
@@ -5841,6 +5842,27 @@ static void convertAndAddHighlight(Vector<Ref<WebCore::SharedMemory>>& buffers, 
 - (void)_showSafeBrowsingWarningWithURL:(NSURL *)url title:(NSString *)title warning:(NSString *)warning detailsWithLinks:(NSAttributedString *)details completionHandler:(void(^)(BOOL, NSURL *))completionHandler
 {
     [self _showWarningViewWithURL:url title:title warning:warning detailsWithLinks:details completionHandler:completionHandler];
+}
+
+- (void)_showMediaCapturePermissionPromptWithConfiguration:(_WKMediaCapturePermissionPromptConfiguration *)configuration completionHandler:(void (^)(_WKMediaCapturePermissionPromptResult *))completionHandler
+{
+    THROW_IF_SUSPENDED;
+#if ENABLE(MEDIA_STREAM)
+    // The supplied array is held so that the index the prompt reports can be mapped back to the object
+    // the application passed in, which is how an action is identified.
+    RetainPtr additionalActions = [configuration additionalActions];
+    protect(*_page)->showMediaCapturePermissionPrompt(WebKit::customizationFromConfiguration(configuration), [completionHandler = makeBlockPtr(completionHandler), additionalActions = WTF::move(additionalActions)](bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID) {
+        auto outcome = granted ? _WKMediaCapturePermissionPromptOutcomeAllowed : _WKMediaCapturePermissionPromptOutcomeDenied;
+        RetainPtr result = adoptNS([[_WKMediaCapturePermissionPromptResult alloc] _initWithOutcome:outcome
+            chosenAction:WebKit::actionAtIndex(additionalActions.get(), chosenAdditionalActionIndex)
+            cameraDeviceID:selectedVideoDeviceUID.createNSString().get()
+            microphoneDeviceID:selectedAudioDeviceUID.createNSString().get()]);
+        completionHandler(result.get());
+    });
+#else
+    UNUSED_PARAM(configuration);
+    completionHandler(adoptNS([[_WKMediaCapturePermissionPromptResult alloc] _initWithOutcome:_WKMediaCapturePermissionPromptOutcomeDenied chosenAction:nil cameraDeviceID:nil microphoneDeviceID:nil]).get());
+#endif
 }
 
 + (NSURL *)_confirmMalwareSentinel

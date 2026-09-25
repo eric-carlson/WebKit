@@ -857,6 +857,21 @@ void UserMediaPermissionRequestManagerProxy::processUserMediaPermissionValidRequ
     });
 }
 
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+void UserMediaPermissionRequestManagerProxy::showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&& customization, UserMediaPermissionRequestProxy::PromptResultHandler&& completionHandler)
+{
+    RefPtr currentUserMediaRequest = m_currentUserMediaRequest;
+    if (!currentUserMediaRequest) {
+        // The application asked for the prompt outside the delegate callback that decides a request,
+        // so there is nothing for the user to answer. Denying degrades better than hanging.
+        RELEASE_LOG_ERROR(WebRTC, "UserMediaPermissionRequestManagerProxy::showMediaCapturePermissionPrompt: no request is being decided");
+        return completionHandler(false, std::nullopt, { }, { });
+    }
+
+    currentUserMediaRequest->showCapturePromptWithoutDeciding(WTF::move(customization), WTF::move(completionHandler));
+}
+#endif
+
 void UserMediaPermissionRequestManagerProxy::decidePolicyForUserMediaPermissionRequest()
 {
     RefPtr currentUserMediaRequest = m_currentUserMediaRequest;

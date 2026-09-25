@@ -181,7 +181,7 @@ static void pinToWidthOfStack(NSView *view, NSStackView *stack)
     RetainPtr<NSPopUpButton> _videoPopUp;
     RetainPtr<NSPopUpButton> _audioPopUp;
     RetainPtr<WKCaptureDeviceChooserLevelView> _audioLevelMeter;
-    RetainPtr<NSButton> _allowButton;
+    RetainPtr<NSArray<NSButton *>> _allowButtons;
 
     // The preview itself is rendered by the GPU process into a layer hosted here, so the
     // chooser only owns the space it occupies.
@@ -200,7 +200,7 @@ static void pinToWidthOfStack(NSView *view, NSStackView *stack)
 - (NSView *)view;
 - (NSString *)selectedVideoDeviceID;
 - (NSString *)selectedAudioDeviceID;
-- (void)setAllowButton:(NSButton *)allowButton;
+- (void)setAllowButtons:(NSArray<NSButton *> *)allowButtons;
 - (NSView *)previewContainer;
 - (void)setPreviewHostingContext:(const WebCore::HostingContext&)hostingContext;
 - (void)setSelectionChangedHandler:(Function<void(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice)>&&)handler;
@@ -441,16 +441,17 @@ static void pinToWidthOfStack(NSView *view, NSStackView *stack)
     [self _rebuildMenu:_audioPopUp.get() devices:_audioDevices reselecting:audioDeviceID];
 }
 
-- (void)setAllowButton:(NSButton *)allowButton
+- (void)setAllowButtons:(NSArray<NSButton *> *)allowButtons
 {
-    _allowButton = allowButton;
+    _allowButtons = allowButtons;
     [self _updateAllowButtonEnablement];
 }
 
 - (void)_updateAllowButtonEnablement
 {
     bool canStillSatisfyRequest = !(_requestNeedsVideo && _videoDevices.isEmpty()) && !(_requestNeedsAudio && _audioDevices.isEmpty());
-    [_allowButton setEnabled:canStillSatisfyRequest];
+    for (NSButton *allowButton in _allowButtons.get())
+        [allowButton setEnabled:canStillSatisfyRequest];
 }
 
 - (void)updateWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
@@ -690,62 +691,122 @@ static RetainPtr<NSString> doNotAllowButtonText(MediaPermissionReason reason)
     }
 }
 
-void alertForPermission(WebPageProxy& page, MediaPermissionReason reason, const WebCore::SecurityOriginData& origin, CompletionHandler<void(bool)>&& completionHandler)
+#if PLATFORM(MAC)
+static PermissionPromptResult promptResultForAlertResponse(NSModalResponse returnCode, const Vector<MediaPermissionPromptAdditionalAction>& additionalActions)
+{
+    if (returnCode == NSAlertFirstButtonReturn)
+        return { .granted = true };
+    if (returnCode == NSAlertSecondButtonReturn)
+        return { .granted = false };
+
+    // Additional actions were added third onward, so the built-in two keep the responses AppKit
+    // documents and an additional action's index falls out of the response.
+    size_t index = returnCode - NSAlertThirdButtonReturn;
+    if (index >= additionalActions.size()) {
+        ASSERT_NOT_REACHED();
+        return { };
+    }
+
+    return {
+        .granted = additionalActions[index].decision == MediaPermissionPromptAdditionalAction::Decision::Allow,
+        .chosenAdditionalActionIndex = index,
+    };
+}
+#endif
+
+static RetainPtr<NSString> promptMessageText(const PermissionPromptRequest& request)
+{
+    if (!request.customization.messageText.isNull())
+        return request.customization.messageText.createNSString();
+    return alertMessageText(request.reason, request.origin);
+}
+
+static RetainPtr<NSString> promptAllowButtonText(const PermissionPromptRequest& request)
+{
+    if (!request.customization.allowButtonTitle.isNull())
+        return request.customization.allowButtonTitle.createNSString();
+    return allowButtonText(request.reason);
+}
+
+static RetainPtr<NSString> promptDenyButtonText(const PermissionPromptRequest& request)
+{
+    if (!request.customization.denyButtonTitle.isNull())
+        return request.customization.denyButtonTitle.createNSString();
+    return doNotAllowButtonText(request.reason);
+}
+
+void alertForPermission(WebPageProxy& page, PermissionPromptRequest&& request, CompletionHandler<void(PermissionPromptResult&&)>&& completionHandler)
 {
     ASSERT(isMainRunLoop());
 
 #if PLATFORM(IOS_FAMILY)
-    if (reason == MediaPermissionReason::DeviceOrientation) {
+    if (request.reason == MediaPermissionReason::DeviceOrientation) {
         if (auto& userPermissionHandler = page.deviceOrientationUserPermissionHandlerForTesting())
-            return completionHandler(userPermissionHandler());
+            return completionHandler({ .granted = userPermissionHandler() });
     }
 #endif
 
-    auto webView = page.cocoaView();
-    if (!webView) {
-        completionHandler(false);
-        return;
-    }
-    
-    RetainPtr alertTitle = alertMessageText(reason, origin);
-    if (!alertTitle) {
-        completionHandler(false);
-        return;
-    }
+    RetainPtr webView = page.cocoaView();
+    if (!webView)
+        return completionHandler({ });
 
-    RetainPtr allowButtonString = allowButtonText(reason);
-    RetainPtr doNotAllowButtonString = doNotAllowButtonText(reason);
+    RetainPtr alertTitle = promptMessageText(request);
+    if (!alertTitle)
+        return completionHandler({ });
+
+    RetainPtr allowButtonString = promptAllowButtonText(request);
+    RetainPtr doNotAllowButtonString = promptDenyButtonText(request);
     auto completionBlock = makeBlockPtr(WTF::move(completionHandler));
 
 #if PLATFORM(MAC)
-    auto alert = adoptNS([NSAlert new]);
+    RetainPtr alert = adoptNS([NSAlert new]);
     [alert setMessageText:alertTitle.get()];
     RetainPtr button = [alert addButtonWithTitle:allowButtonString.get()];
-    button.get().keyEquivalent = @"";
+    [button setKeyEquivalent:@""];
     button = [alert addButtonWithTitle:doNotAllowButtonString.get()];
-    button.get().keyEquivalent = @"\E";
-    [alert beginSheetModalForWindow:retainPtr([webView window]).get() completionHandler:[completionBlock](NSModalResponse returnCode) {
-        auto shouldAllow = returnCode == NSAlertFirstButtonReturn;
-        completionBlock(shouldAllow);
+    [button setKeyEquivalent:@"\E"];
+    for (auto& action : request.customization.additionalActions) {
+        button = [alert addButtonWithTitle:action.title.createNSString().get()];
+        // Cleared so AppKit does not hand Return to a button the application supplied.
+        [button setKeyEquivalent:@""];
+    }
+
+    [alert beginSheetModalForWindow:retainPtr([webView window]).get() completionHandler:[completionBlock, additionalActions = WTF::move(request.customization.additionalActions)](NSModalResponse returnCode) {
+        completionBlock(promptResultForAlertResponse(returnCode, additionalActions));
     }];
 #else
-    auto alert = WebKit::createUIAlertController(alertTitle.get(), nil);
-    RetainPtr allowAction = [UIAlertAction actionWithTitle:allowButtonString.get() style:UIAlertActionStyleDefault handler:[completionBlock](UIAlertAction *action) {
-        completionBlock(true);
+    RetainPtr alert = WebKit::createUIAlertController(alertTitle.get(), nil);
+    RetainPtr allowAction = [UIAlertAction actionWithTitle:allowButtonString.get() style:UIAlertActionStyleDefault handler:[completionBlock](UIAlertAction *) {
+        completionBlock({ .granted = true });
     }];
 
-    RetainPtr doNotAllowAction = [UIAlertAction actionWithTitle:doNotAllowButtonString.get() style:UIAlertActionStyleCancel handler:[completionBlock](UIAlertAction *action) {
-        completionBlock(false);
+    RetainPtr doNotAllowAction = [UIAlertAction actionWithTitle:doNotAllowButtonString.get() style:UIAlertActionStyleCancel handler:[completionBlock](UIAlertAction *) {
+        completionBlock({ .granted = false });
     }];
 
     [alert addAction:doNotAllowAction.get()];
     [alert addAction:allowAction.get()];
+
+    for (size_t index = 0; index < request.customization.additionalActions.size(); ++index) {
+        auto& action = request.customization.additionalActions[index];
+        bool granted = action.decision == MediaPermissionPromptAdditionalAction::Decision::Allow;
+        [alert addAction:[UIAlertAction actionWithTitle:action.title.createNSString().get() style:UIAlertActionStyleDefault handler:[completionBlock, index, granted](UIAlertAction *) {
+            completionBlock({ .granted = granted, .chosenAdditionalActionIndex = index });
+        }]];
+    }
 
 #if PLATFORM(VISION)
     page.dispatchWillPresentModalUI();
 #endif
     [[webView _wk_viewControllerForFullScreenPresentation] presentViewController:alert.get() animated:YES completion:nil];
 #endif
+}
+
+void alertForPermission(WebPageProxy& page, MediaPermissionReason reason, const WebCore::SecurityOriginData& origin, CompletionHandler<void(bool)>&& completionHandler)
+{
+    alertForPermission(page, { .reason = reason, .origin = origin }, [completionHandler = WTF::move(completionHandler)](PermissionPromptResult&& result) mutable {
+        completionHandler(result.granted);
+    });
 }
 
 #if PLATFORM(MAC) && ENABLE(MEDIA_STREAM)
@@ -760,7 +821,8 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
         return { };
     }
 
-    RetainPtr alertTitle = alertMessageText(request.reason, request.origin);
+    PermissionPromptRequest textRequest { .reason = request.reason, .origin = request.origin, .customization = request.customization };
+    RetainPtr alertTitle = promptMessageText(textRequest);
     if (!alertTitle) {
         completionHandler({ });
         return { };
@@ -770,12 +832,22 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
 
     RetainPtr alert = adoptNS([NSAlert new]);
     [alert setMessageText:alertTitle.get()];
-    RetainPtr allowButton = [alert addButtonWithTitle:allowButtonText(request.reason).get()];
+    RetainPtr allowButton = [alert addButtonWithTitle:promptAllowButtonText(textRequest).get()];
     [allowButton setKeyEquivalent:@""];
-    RetainPtr denyButton = [alert addButtonWithTitle:doNotAllowButtonText(request.reason).get()];
+    RetainPtr denyButton = [alert addButtonWithTitle:promptDenyButtonText(textRequest).get()];
     [denyButton setKeyEquivalent:@"\E"];
+
+    RetainPtr allowButtons = adoptNS([[NSMutableArray alloc] initWithObjects:allowButton.get(), nil]);
+    for (auto& action : request.customization.additionalActions) {
+        RetainPtr additionalButton = [alert addButtonWithTitle:action.title.createNSString().get()];
+        // Cleared so AppKit does not hand Return to a button the application supplied.
+        [additionalButton setKeyEquivalent:@""];
+        if (action.decision == MediaPermissionPromptAdditionalAction::Decision::Allow)
+            [allowButtons addObject:additionalButton.get()];
+    }
+
     [alert setAccessoryView:[chooser view]];
-    [chooser setAllowButton:allowButton.get()];
+    [chooser setAllowButtons:allowButtons.get()];
 
     // The preview is captured and rendered by the GPU process, so the chooser only reports
     // which devices the user picked and the GPU process is told to follow.
@@ -799,8 +871,9 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
             });
     }];
 
-    auto completionBlock = makeBlockPtr([completionHandler = WTF::move(completionHandler), chooser, pageForPreview, pageIdentifier = page.webPageIDInMainFrameProcess()](NSModalResponse returnCode) mutable {
-        bool shouldAllow = returnCode == NSAlertFirstButtonReturn;
+    auto completionBlock = makeBlockPtr([completionHandler = WTF::move(completionHandler), chooser, pageForPreview, pageIdentifier = page.webPageIDInMainFrameProcess(), additionalActions = WTF::move(request.customization.additionalActions)](NSModalResponse returnCode) mutable {
+        auto outcome = promptResultForAlertResponse(returnCode, additionalActions);
+        bool shouldAllow = outcome.granted;
         RetainPtr selectedVideoDeviceID = shouldAllow ? [chooser selectedVideoDeviceID] : nil;
         RetainPtr selectedAudioDeviceID = shouldAllow ? [chooser selectedAudioDeviceID] : nil;
 
@@ -810,7 +883,12 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
             gpuProcess->stopCapturePreview(pageIdentifier);
         [chooser stop];
 
-        completionHandler({ .granted = shouldAllow, .selectedAudioDeviceUID = selectedAudioDeviceID.get(), .selectedVideoDeviceUID = selectedVideoDeviceID.get() });
+        completionHandler({
+            .granted = shouldAllow,
+            .selectedAudioDeviceUID = selectedAudioDeviceID.get(),
+            .selectedVideoDeviceUID = selectedVideoDeviceID.get(),
+            .chosenAdditionalActionIndex = outcome.chosenAdditionalActionIndex,
+        });
     });
 
     [alert beginSheetModalForWindow:retainPtr([webView window]).get() completionHandler:completionBlock.get()];
@@ -839,7 +917,8 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
         return { };
     }
 
-    RetainPtr alertTitle = alertMessageText(request.reason, request.origin);
+    PermissionPromptRequest textRequest { .reason = request.reason, .origin = request.origin, .customization = request.customization };
+    RetainPtr alertTitle = promptMessageText(textRequest);
     if (!alertTitle) {
         completionHandler({ });
         return { };
@@ -851,7 +930,7 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
         return { };
     }
 
-    RetainPtr controller = adoptNS([[WKCapturePreviewViewController alloc] initWithTitle:alertTitle.get() allowButtonTitle:allowButtonText(request.reason).get() denyButtonTitle:doNotAllowButtonText(request.reason).get() videoDevices:WTF::move(request.eligibleVideoDevices) audioDevices:WTF::move(request.eligibleAudioDevices)]);
+    RetainPtr controller = adoptNS([[WKCapturePreviewViewController alloc] initWithTitle:alertTitle.get() allowButtonTitle:promptAllowButtonText(textRequest).get() denyButtonTitle:promptDenyButtonText(textRequest).get() additionalActions:WTF::move(request.customization.additionalActions) videoDevices:WTF::move(request.eligibleVideoDevices) audioDevices:WTF::move(request.eligibleAudioDevices)]);
 
     // The preview is captured and rendered by the GPU process, so the controller only reports which
     // devices the user picked and the GPU process is told to follow.
@@ -877,7 +956,7 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
             });
     }];
 
-    [controller setDecisionHandler:[completionHandler = WTF::move(completionHandler), weakController = WeakObjCPtr<WKCapturePreviewViewController>(controller.get()), pageForPreview, pageIdentifier = page.webPageIDInMainFrameProcess()](bool granted) mutable {
+    [controller setDecisionHandler:[completionHandler = WTF::move(completionHandler), weakController = WeakObjCPtr<WKCapturePreviewViewController>(controller.get()), pageForPreview, pageIdentifier = page.webPageIDInMainFrameProcess()](bool granted, std::optional<size_t> chosenAdditionalActionIndex) mutable {
         RetainPtr controller = weakController.get();
         RetainPtr selectedVideoDeviceID = granted ? [controller selectedVideoDeviceID] : nil;
         RetainPtr selectedAudioDeviceID = granted ? [controller selectedAudioDeviceID] : nil;
@@ -889,7 +968,12 @@ CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy& p
         [controller stop];
         [controller dismissViewControllerAnimated:YES completion:nil];
 
-        completionHandler({ .granted = granted, .selectedAudioDeviceUID = selectedAudioDeviceID.get(), .selectedVideoDeviceUID = selectedVideoDeviceID.get() });
+        completionHandler({
+            .granted = granted,
+            .selectedAudioDeviceUID = selectedAudioDeviceID.get(),
+            .selectedVideoDeviceUID = selectedVideoDeviceID.get(),
+            .chosenAdditionalActionIndex = chosenAdditionalActionIndex,
+        });
     }];
 
 #if PLATFORM(VISION)
