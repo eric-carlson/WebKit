@@ -71,10 +71,17 @@ WK_CLASS_AVAILABLE(macos(WK_MAC_TBA), ios(WK_IOS_TBA))
 @interface _WKMediaCapturePermissionPromptConfiguration : NSObject
 
 @property (nonatomic, copy, nullable) NSString *messageText;
+
+/*! @abstract Text shown below the message.
+ @discussion Unlike the other strings this has no WebKit default, so the prompt shows no informative
+ text unless the application sets one.
+ */
+@property (nonatomic, copy, nullable) NSString *informativeText;
+
 @property (nonatomic, copy, nullable) NSString *allowButtonTitle;
 @property (nonatomic, copy, nullable) NSString *denyButtonTitle;
 
-/*! @abstract Buttons to add after the allow and deny buttons. Empty by default. */
+/*! @abstract Buttons shown between the allow and deny buttons. Empty by default. */
 @property (nonatomic, copy) NSArray<_WKMediaCapturePermissionAction *> *additionalActions;
 
 @end

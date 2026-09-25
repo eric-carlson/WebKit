@@ -1433,7 +1433,8 @@ CaptureDevicePreviewInPromptEnabled:
   humanReadableDescription: "Show a live camera preview, microphone level meter, and device menus in the getUserMedia permission prompt"
   condition: ENABLE(MEDIA_STREAM)
   excludeFrom: [ WebKitLegacy, WebCore ]
-  defaultValue: false
+  defaultValue: true
+## @@@@@  defaultValue: false
 
 CaptureVideoInGPUProcessEnabled:
   type: bool

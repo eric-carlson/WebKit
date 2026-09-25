@@ -30,8 +30,8 @@
 
 namespace WebKit {
 
-// More than this and an alert's buttons no longer fit a single row on macOS, nor the prompt's height
-// on iOS.
+// More than this and the stacked buttons push the prompt past a comfortable height, on macOS and iOS
+// alike.
 static constexpr size_t maximumPromptAdditionalActions = 2;
 
 struct MediaPermissionPromptAdditionalAction {
@@ -41,9 +41,11 @@ struct MediaPermissionPromptAdditionalAction {
     Decision decision { Decision::Deny };
 };
 
-// A null string means the prompt keeps the text WebKit would have used.
+// A null string means the prompt keeps the text WebKit would have used. Informative text has no WebKit
+// default, so a null one means none is shown.
 struct MediaPermissionPromptCustomization {
     String messageText;
+    String informativeText;
     String allowButtonTitle;
     String denyButtonTitle;
     Vector<MediaPermissionPromptAdditionalAction> additionalActions;

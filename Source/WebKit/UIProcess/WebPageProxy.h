@@ -2474,6 +2474,9 @@ public:
     void NODELETE stopMonitoringCaptureDeviceRotation(const String&);
     void NODELETE rotationAngleForCaptureDeviceChanged(const String&, WebCore::VideoFrameRotation);
     void microphoneMuteStatusChanged(bool isMuting);
+#if PLATFORM(COCOA)
+    void showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&&, CompletionHandler<void(bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID)>&&);
+#endif
 #endif
 
     void maybeInitializeSandboxExtensionHandle(WebProcessProxy&, const URL&, const URL& resourceDirectoryURL, bool checkAssumedReadAccessToResourceURL, CompletionHandler<void(std::optional<SandboxExtensionHandle>&&)>&&);
@@ -3310,9 +3313,6 @@ private:
     void beginMonitoringCaptureDevices();
     void validateCaptureStateUpdate(WebCore::UserMediaRequestIdentifier, IPC::Untrusted<WebCore::ClientOrigin>&&, FrameInfoData&&, bool isActive, WebCore::MediaProducerMediaCaptureKind, CompletionHandler<void(std::optional<WebCore::Exception>&&)>&&);
     void setShouldListenToVoiceActivity(bool);
-#if PLATFORM(COCOA)
-    void showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&&, CompletionHandler<void(bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID)>&&);
-#endif
 #endif
 
 #if ENABLE(ENCRYPTED_MEDIA)

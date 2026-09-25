@@ -60,6 +60,7 @@ const NSUInteger _WKMediaCapturePermissionPromptMaximumAdditionalActions = WebKi
 
 @implementation _WKMediaCapturePermissionPromptConfiguration {
     RetainPtr<NSString> _messageText;
+    RetainPtr<NSString> _informativeText;
     RetainPtr<NSString> _allowButtonTitle;
     RetainPtr<NSString> _denyButtonTitle;
     RetainPtr<NSArray<_WKMediaCapturePermissionAction *>> _additionalActions;
@@ -83,6 +84,16 @@ const NSUInteger _WKMediaCapturePermissionPromptMaximumAdditionalActions = WebKi
 - (void)setMessageText:(NSString *)messageText
 {
     _messageText = adoptNS([messageText copy]);
+}
+
+- (NSString *)informativeText
+{
+    return _informativeText.get();
+}
+
+- (void)setInformativeText:(NSString *)informativeText
+{
+    _informativeText = adoptNS([informativeText copy]);
 }
 
 - (NSString *)allowButtonTitle
@@ -168,6 +179,7 @@ MediaPermissionPromptCustomization customizationFromConfiguration(_WKMediaCaptur
 
     MediaPermissionPromptCustomization customization {
         .messageText = [configuration messageText],
+        .informativeText = [configuration informativeText],
         .allowButtonTitle = [configuration allowButtonTitle],
         .denyButtonTitle = [configuration denyButtonTitle],
     };

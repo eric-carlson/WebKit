@@ -28,6 +28,7 @@
 
 #if PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM)
 
+#import "CapturePreviewLevelMeterState.h"
 #import "LayerHostingContext.h"
 #import "Logging.h"
 #import <WebCore/LocalizedStrings.h>
@@ -46,13 +47,16 @@ enum class PreviewDeviceType : bool { Camera, Microphone };
 constexpr CGFloat previewAspectRatio = 4.0 / 3.0;
 constexpr CGFloat contentSpacing = 16;
 constexpr CGFloat contentInset = 20;
+constexpr CGFloat informativeTextSpacing = 4;
 constexpr CGFloat decisionButtonSpacing = 28;
+constexpr CGFloat decisionButtonStackSpacing = 8;
 constexpr CGFloat promptCornerRadius = 16;
 constexpr CGFloat previewCornerRadius = 8;
 constexpr CGFloat promptTopMargin = 24;
 constexpr CGFloat sectionCornerRadius = 12;
 constexpr CGFloat sectionInset = 12;
-constexpr CGFloat audioLevelMeterHeight = 10;
+constexpr CGFloat audioLevelMeterHeight = 14;
+constexpr CGFloat audioLevelSegmentWidth = 6;
 constexpr CGFloat audioLevelIconSpacing = 10;
 constexpr CGFloat previewBadgeInset = 8;
 constexpr CGFloat previewBadgeHorizontalPadding = 8;
@@ -89,14 +93,13 @@ static CGFloat previewWidth()
 
 @end
 
-// A level meter that is never narrower than it is tall, so it reads as a level at rest rather than
-// as a divider. UIProgressView cannot do that: its track is a few points tall with square ends and
-// no minimum fill.
+// Drawn as the input level in System Settings: grey capsules lit from the leading edge, with the held
+// peak in the accent colour.
 @interface WKCapturePreviewAudioLevelView : UIView {
-    RetainPtr<UIView> _fill;
-    float _level;
+    WebKit::CapturePreviewLevelMeterState _state;
 }
 - (void)setLevel:(float)level;
+- (void)reset;
 @end
 
 @implementation WKCapturePreviewAudioLevelView
@@ -106,13 +109,10 @@ static CGFloat previewWidth()
     if (!(self = [super initWithFrame:CGRectZero]))
         return nil;
 
-    _level = 0;
-    [self setBackgroundColor:[UIColor secondarySystemFillColor]];
-    [self setClipsToBounds:YES];
-
-    _fill = adoptNS([[UIView alloc] init]);
-    [_fill setBackgroundColor:[UIColor systemBlueColor]];
-    [self addSubview:_fill.get()];
+    [self setOpaque:NO];
+    [self setBackgroundColor:[UIColor clearColor]];
+    // Segments are spaced across the width, so a resize has to redraw rather than stretch them.
+    [self setContentMode:UIViewContentModeRedraw];
 
     return self;
 }
@@ -124,24 +124,33 @@ static CGFloat previewWidth()
 
 - (void)setLevel:(float)level
 {
-    level = std::clamp(level, 0.f, 1.f);
-    if (_level == level)
-        return;
-
-    _level = level;
-    [self setNeedsLayout];
+    if (_state.update(level, MonotonicTime::now()))
+        [self setNeedsDisplay];
 }
 
-- (void)layoutSubviews
+- (void)reset
 {
-    [super layoutSubviews];
+    if (_state.reset())
+        [self setNeedsDisplay];
+}
 
+- (void)drawRect:(CGRect)rect
+{
     CGRect bounds = [self bounds];
-    CGFloat height = CGRectGetHeight(bounds);
-    [[self layer] setCornerRadius:height / 2];
+    constexpr unsigned segmentCount = WebKit::CapturePreviewLevelMeterState::segmentCount;
+    CGFloat pitch = (CGRectGetWidth(bounds) - audioLevelSegmentWidth) / (segmentCount - 1);
 
-    [_fill setFrame:CGRectMake(0, 0, std::max(height, std::round(CGRectGetWidth(bounds) * _level)), height)];
-    [[_fill layer] setCornerRadius:height / 2];
+    for (unsigned index = 0; index < segmentCount; ++index) {
+        if (index + 1 == _state.peakSegments)
+            [[UIColor systemBlueColor] setFill];
+        else if (index < _state.litSegments)
+            [[UIColor secondaryLabelColor] setFill];
+        else
+            [[UIColor secondarySystemFillColor] setFill];
+
+        CGRect segment = CGRectMake(CGRectGetMinX(bounds) + std::round(index * pitch), CGRectGetMinY(bounds), audioLevelSegmentWidth, CGRectGetHeight(bounds));
+        [[UIBezierPath bezierPathWithRoundedRect:segment cornerRadius:audioLevelSegmentWidth / 2] fill];
+    }
 }
 
 @end
@@ -201,6 +210,7 @@ static CGFloat previewWidth()
 
 @implementation WKCapturePreviewViewController {
     RetainPtr<NSString> _alertTitle;
+    RetainPtr<NSString> _informativeText;
     RetainPtr<NSString> _allowButtonTitle;
     RetainPtr<NSString> _denyButtonTitle;
 
@@ -230,12 +240,13 @@ static CGFloat previewWidth()
     CompletionHandler<void(bool, std::optional<size_t>)> _decisionHandler;
 }
 
-- (instancetype)initWithTitle:(NSString *)alertTitle allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
+- (instancetype)initWithTitle:(NSString *)alertTitle informativeText:(NSString *)informativeText allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
 {
     if (!(self = [super initWithNibName:nil bundle:nil]))
         return nil;
 
     _alertTitle = alertTitle;
+    _informativeText = informativeText;
     _allowButtonTitle = allowButtonTitle;
     _denyButtonTitle = denyButtonTitle;
     _additionalActions = WTF::move(additionalActions);
@@ -327,11 +338,6 @@ static CGFloat previewWidth()
     [_previewContainer setClipsToBounds:YES];
     [[_previewContainer layer] setCornerRadius:previewCornerRadius];
 
-    RetainPtr buttonRow = adoptNS([[UIStackView alloc] init]);
-    [buttonRow setAxis:UILayoutConstraintAxisHorizontal];
-    [buttonRow setDistribution:UIStackViewDistributionFillEqually];
-    [buttonRow setSpacing:contentSpacing];
-
     RetainPtr denyConfiguration = [UIButtonConfiguration grayButtonConfiguration];
     [denyConfiguration setTitle:_denyButtonTitle.get()];
     [denyConfiguration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
@@ -348,8 +354,32 @@ static CGFloat previewWidth()
 
     _allowButtons = adoptNS([[NSMutableArray alloc] initWithObjects:allowButton.get(), nil]);
 
-    [buttonRow addArrangedSubview:denyButton.get()];
-    [buttonRow addArrangedSubview:allowButton.get()];
+    // Stacked rather than side by side, so buttons the application adds line up with Allow and
+    // Don't Allow instead of reading as a separate group.
+    RetainPtr decisionButtons = adoptNS([[UIStackView alloc] init]);
+    [decisionButtons setAxis:UILayoutConstraintAxisVertical];
+    [decisionButtons setSpacing:decisionButtonStackSpacing];
+    [decisionButtons addArrangedSubview:allowButton.get()];
+
+    for (size_t index = 0; index < _additionalActions.size(); ++index) {
+        auto& action = _additionalActions[index];
+        RetainPtr configuration = [UIButtonConfiguration grayButtonConfiguration];
+        [configuration setTitle:action.title.createNSString().get()];
+        [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
+        // A title long enough to need two lines is the case these buttons exist for.
+        [configuration setTitleLineBreakMode:NSLineBreakByWordWrapping];
+
+        RetainPtr additionalAction = [UIAction actionWithTitle:@"" image:nil identifier:nil handler:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self), index](UIAction *) {
+            [weakSelf.get() _activateAdditionalActionAtIndex:index];
+        }];
+        RetainPtr additionalButton = [UIButton buttonWithConfiguration:configuration.get() primaryAction:additionalAction.get()];
+        [decisionButtons addArrangedSubview:additionalButton.get()];
+
+        if (action.decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow)
+            [_allowButtons addObject:additionalButton.get()];
+    }
+
+    [decisionButtons addArrangedSubview:denyButton.get()];
 
     _contentStack = adoptNS([[UIStackView alloc] init]);
     [_contentStack setAxis:UILayoutConstraintAxisVertical];
@@ -358,6 +388,20 @@ static CGFloat previewWidth()
     [_contentStack addArrangedSubview:titleLabel.get()];
 
     RetainPtr<UIView> lastViewBeforeDecisionButtons = titleLabel;
+
+    if (_informativeText) {
+        RetainPtr informativeLabel = adoptNS([[UILabel alloc] init]);
+        [informativeLabel setText:_informativeText.get()];
+        [informativeLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
+        [informativeLabel setNumberOfLines:0];
+        [informativeLabel setLineBreakMode:NSLineBreakByWordWrapping];
+        [informativeLabel setPreferredMaxLayoutWidth:contentWidth()];
+        [informativeLabel setTextAlignment:NSTextAlignmentCenter];
+        [_contentStack addArrangedSubview:informativeLabel.get()];
+        // Kept close to the title so the two read as one block of text, as in a system alert.
+        [_contentStack setCustomSpacing:informativeTextSpacing afterView:titleLabel.get()];
+        lastViewBeforeDecisionButtons = informativeLabel;
+    }
 
     if (_requestNeedsVideo) {
         _videoButton = [self _createDeviceButtonForDeviceType:PreviewDeviceType::Camera];
@@ -422,26 +466,8 @@ static CGFloat previewWidth()
         lastViewBeforeDecisionButtons = microphoneSection;
     }
 
-    [_contentStack addArrangedSubview:buttonRow.get()];
+    [_contentStack addArrangedSubview:decisionButtons.get()];
     [_contentStack setCustomSpacing:decisionButtonSpacing afterView:lastViewBeforeDecisionButtons.get()];
-
-    for (size_t index = 0; index < _additionalActions.size(); ++index) {
-        auto& action = _additionalActions[index];
-        RetainPtr configuration = [UIButtonConfiguration grayButtonConfiguration];
-        [configuration setTitle:action.title.createNSString().get()];
-        [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
-        // A title long enough to need two lines is the case these buttons exist for.
-        [configuration setTitleLineBreakMode:NSLineBreakByWordWrapping];
-
-        RetainPtr additionalAction = [UIAction actionWithTitle:@"" image:nil identifier:nil handler:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self), index](UIAction *) {
-            [weakSelf.get() _activateAdditionalActionAtIndex:index];
-        }];
-        RetainPtr additionalButton = [UIButton buttonWithConfiguration:configuration.get() primaryAction:additionalAction.get()];
-        [_contentStack addArrangedSubview:additionalButton.get()];
-
-        if (action.decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow)
-            [_allowButtons addObject:additionalButton.get()];
-    }
     [[self view] addSubview:_contentStack.get()];
 
     // Pinned to the view rather than its layout margins guide, which would inset the stack by a
@@ -670,10 +696,10 @@ static CGFloat previewWidth()
     if (_audioButton)
         [self _updateMenuForButton:_audioButton.get() deviceType:PreviewDeviceType::Microphone];
 
-    // A meter left at its last value after the microphone was unplugged would read as a live signal
+    // A level or peak left showing after the microphone was unplugged would read as a live signal
     // from a device that is gone.
     if (_audioDevices.isEmpty())
-        [self setAudioLevel:0];
+        [_audioLevelMeter reset];
 
     if ([self isViewLoaded]) {
         [self _updateAllowButtonEnablement];
@@ -715,7 +741,7 @@ static CGFloat previewWidth()
 - (void)stop
 {
     _selectionChangedHandler = nullptr;
-    [self setAudioLevel:0];
+    [_audioLevelMeter reset];
     [self setPreviewHostingContext:WebCore::HostingContext { } gpuProcessIdentifier:0];
 }
 
