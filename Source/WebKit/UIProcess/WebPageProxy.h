@@ -671,6 +671,7 @@ struct JSHandleInfo;
 struct KeyEventInterpretationContext;
 struct LoadParameters;
 struct MainFrameData;
+struct MediaPermissionPromptCustomization;
 struct PageData;
 struct NavigationActionData;
 struct NetworkResourceLoadIdentifierType;
@@ -3397,6 +3398,9 @@ private:
     void beginMonitoringCaptureDevices();
     void validateCaptureStateUpdate(IPC::Connection&, WebCore::UserMediaRequestIdentifier, IPC::Untrusted<WebCore::ClientOrigin>&&, FrameInfoData&&, bool isActive, WebCore::MediaProducerMediaCaptureKind, CompletionHandler<void(std::optional<WebCore::Exception>&&)>&&);
     void setShouldListenToVoiceActivity(bool);
+#if PLATFORM(COCOA)
+    void showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&&, CompletionHandler<void(bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID)>&&);
+#endif
 #endif
 
 #if ENABLE(ENCRYPTED_MEDIA)

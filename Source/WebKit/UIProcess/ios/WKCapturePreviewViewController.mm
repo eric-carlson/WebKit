@@ -212,7 +212,7 @@ static CGFloat previewWidth()
 #if USE(EXTENSIONKIT)
     RetainPtr<BELayerHierarchyHostingView> _previewHostingView;
 #endif
-    RetainPtr<UIButton> _allowButton;
+    RetainPtr<NSMutableArray<UIButton *>> _allowButtons;
     RetainPtr<UIButton> _videoButton;
     RetainPtr<UIButton> _audioButton;
     RetainPtr<WKCapturePreviewAudioLevelView> _audioLevelMeter;
@@ -224,11 +224,13 @@ static CGFloat previewWidth()
     BOOL _requestNeedsVideo;
     BOOL _requestNeedsAudio;
 
+    Vector<WebKit::MediaPermissionPromptAdditionalAction> _additionalActions;
+
     Function<void(std::optional<WebCore::CaptureDevice>&&, std::optional<WebCore::CaptureDevice>&&)> _selectionChangedHandler;
-    CompletionHandler<void(bool)> _decisionHandler;
+    CompletionHandler<void(bool, std::optional<size_t>)> _decisionHandler;
 }
 
-- (instancetype)initWithTitle:(NSString *)alertTitle allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
+- (instancetype)initWithTitle:(NSString *)alertTitle allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
 {
     if (!(self = [super initWithNibName:nil bundle:nil]))
         return nil;
@@ -236,6 +238,7 @@ static CGFloat previewWidth()
     _alertTitle = alertTitle;
     _allowButtonTitle = allowButtonTitle;
     _denyButtonTitle = denyButtonTitle;
+    _additionalActions = WTF::move(additionalActions);
     _videoDevices = WTF::move(videoDevices);
     _audioDevices = WTF::move(audioDevices);
     _requestNeedsVideo = !_videoDevices.isEmpty();
@@ -259,7 +262,7 @@ static CGFloat previewWidth()
 - (void)dealloc
 {
     if (_decisionHandler)
-        _decisionHandler(false);
+        _decisionHandler(false, std::nullopt);
     [super dealloc];
 }
 
@@ -296,7 +299,7 @@ static CGFloat previewWidth()
         [self _notifySelectionChanged];
 }
 
-- (void)setDecisionHandler:(CompletionHandler<void(bool)>&&)handler
+- (void)setDecisionHandler:(CompletionHandler<void(bool, std::optional<size_t>)>&&)handler
 {
     _decisionHandler = WTF::move(handler);
 }
@@ -339,12 +342,14 @@ static CGFloat previewWidth()
     RetainPtr allowConfiguration = [UIButtonConfiguration filledButtonConfiguration];
     [allowConfiguration setTitle:_allowButtonTitle.get()];
     [allowConfiguration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
-    _allowButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [_allowButton setConfiguration:allowConfiguration.get()];
-    [_allowButton addTarget:self action:@selector(_allow) forControlEvents:UIControlEventTouchUpInside];
+    RetainPtr allowButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [allowButton setConfiguration:allowConfiguration.get()];
+    [allowButton addTarget:self action:@selector(_allow) forControlEvents:UIControlEventTouchUpInside];
+
+    _allowButtons = adoptNS([[NSMutableArray alloc] initWithObjects:allowButton.get(), nil]);
 
     [buttonRow addArrangedSubview:denyButton.get()];
-    [buttonRow addArrangedSubview:_allowButton.get()];
+    [buttonRow addArrangedSubview:allowButton.get()];
 
     _contentStack = adoptNS([[UIStackView alloc] init]);
     [_contentStack setAxis:UILayoutConstraintAxisVertical];
@@ -419,6 +424,24 @@ static CGFloat previewWidth()
 
     [_contentStack addArrangedSubview:buttonRow.get()];
     [_contentStack setCustomSpacing:decisionButtonSpacing afterView:lastViewBeforeDecisionButtons.get()];
+
+    for (size_t index = 0; index < _additionalActions.size(); ++index) {
+        auto& action = _additionalActions[index];
+        RetainPtr configuration = [UIButtonConfiguration grayButtonConfiguration];
+        [configuration setTitle:action.title.createNSString().get()];
+        [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
+        // A title long enough to need two lines is the case these buttons exist for.
+        [configuration setTitleLineBreakMode:NSLineBreakByWordWrapping];
+
+        RetainPtr additionalAction = [UIAction actionWithTitle:@"" image:nil identifier:nil handler:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self), index](UIAction *) {
+            [weakSelf.get() _activateAdditionalActionAtIndex:index];
+        }];
+        RetainPtr additionalButton = [UIButton buttonWithConfiguration:configuration.get() primaryAction:additionalAction.get()];
+        [_contentStack addArrangedSubview:additionalButton.get()];
+
+        if (action.decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow)
+            [_allowButtons addObject:additionalButton.get()];
+    }
     [[self view] addSubview:_contentStack.get()];
 
     // Pinned to the view rather than its layout margins guide, which would inset the stack by a
@@ -665,19 +688,28 @@ static CGFloat previewWidth()
     // Unplugging the last device of a requested kind leaves nothing to grant, so Allow must not stay
     // tappable with a stale label.
     bool canStillSatisfyRequest = !(_requestNeedsVideo && _videoDevices.isEmpty()) && !(_requestNeedsAudio && _audioDevices.isEmpty());
-    [_allowButton setEnabled:canStillSatisfyRequest];
+    for (UIButton *allowButton in _allowButtons.get())
+        [allowButton setEnabled:canStillSatisfyRequest];
 }
 
 - (void)_allow
 {
     if (auto handler = WTF::move(_decisionHandler))
-        handler(true);
+        handler(true, std::nullopt);
 }
 
 - (void)deny
 {
     if (auto handler = WTF::move(_decisionHandler))
-        handler(false);
+        handler(false, std::nullopt);
+}
+
+- (void)_activateAdditionalActionAtIndex:(size_t)index
+{
+    ASSERT(index < _additionalActions.size());
+    bool granted = _additionalActions[index].decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow;
+    if (auto handler = WTF::move(_decisionHandler))
+        handler(granted, index);
 }
 
 - (void)stop

@@ -27,6 +27,7 @@
 
 #if PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM)
 
+#include "MediaPermissionPromptCustomization.h"
 #include <WebCore/CaptureDevice.h>
 #include <WebCore/HostingContext.h>
 #include <wtf/CompletionHandler.h>
@@ -39,7 +40,7 @@
 // no custom content, so unlike macOS this replaces the alert rather than adding an accessory view.
 @interface WKCapturePreviewViewController : UIViewController <UIViewControllerTransitioningDelegate>
 
-- (instancetype)initWithTitle:(NSString *)alertTitle allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;
+- (instancetype)initWithTitle:(NSString *)alertTitle allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;
 
 // The GPU process builds its layer at this size, so it has to match the container exactly or the
 // hosted layer will not fill it.
@@ -49,7 +50,7 @@
 @property (nonatomic, readonly, copy) NSString *selectedAudioDeviceID;
 
 - (void)setSelectionChangedHandler:(Function<void(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice)>&&)handler;
-- (void)setDecisionHandler:(CompletionHandler<void(bool granted)>&&)handler;
+- (void)setDecisionHandler:(CompletionHandler<void(bool granted, std::optional<size_t> chosenAdditionalActionIndex)>&&)handler;
 - (void)setPreviewHostingContext:(const WebCore::HostingContext&)hostingContext gpuProcessIdentifier:(ProcessID)gpuProcessIdentifier;
 - (void)setAudioLevel:(float)level;
 - (void)updateWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;

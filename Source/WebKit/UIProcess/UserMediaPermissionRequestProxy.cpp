@@ -101,7 +101,7 @@ static inline bool moveDeviceToFront(Vector<CaptureDevice>& devices, const Strin
 }
 #endif
 
-void UserMediaPermissionRequestProxy::allow(const String& audioDeviceUID, const String& videoDeviceUID)
+void UserMediaPermissionRequestProxy::applyDeviceSelection(const String& audioDeviceUID, const String& videoDeviceUID)
 {
 #if ENABLE(MEDIA_STREAM)
     // Remembered because the grant path revalidates constraints, which rebuilds the eligible lists
@@ -122,7 +122,11 @@ void UserMediaPermissionRequestProxy::allow(const String& audioDeviceUID, const 
     UNUSED_PARAM(audioDeviceUID);
     UNUSED_PARAM(videoDeviceUID);
 #endif
+}
 
+void UserMediaPermissionRequestProxy::allow(const String& audioDeviceUID, const String& videoDeviceUID)
+{
+    applyDeviceSelection(audioDeviceUID, videoDeviceUID);
     allow();
 }
 
@@ -270,12 +274,35 @@ void UserMediaPermissionRequestProxy::promptForGetDisplayMedia(UserMediaDisplayC
 void UserMediaPermissionRequestProxy::promptForGetUserMedia()
 {
 #if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
+    showCapturePrompt({ }, [this, protectedThis = Ref { *this }](bool granted, std::optional<size_t>, String selectedAudioDeviceUID, String selectedVideoDeviceUID) {
+        if (!granted)
+            deny(UserMediaAccessDenialReason::PermissionDenied);
+        else
+            allow(selectedAudioDeviceUID, selectedVideoDeviceUID);
+    });
+#endif
+}
+
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+
+void UserMediaPermissionRequestProxy::showCapturePromptWithoutDeciding(MediaPermissionPromptCustomization&& customization, PromptResultHandler&& completionHandler)
+{
+    showCapturePrompt(WTF::move(customization), [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID) mutable {
+        // Recorded but not granted: the application decides, and a grant that follows has to capture
+        // from the device the user picked here rather than element 0 of the eligible lists.
+        if (granted)
+            applyDeviceSelection(selectedAudioDeviceUID, selectedVideoDeviceUID);
+
+        completionHandler(granted, chosenAdditionalActionIndex, WTF::move(selectedAudioDeviceUID), WTF::move(selectedVideoDeviceUID));
+    });
+}
+
+void UserMediaPermissionRequestProxy::showCapturePrompt(MediaPermissionPromptCustomization&& customization, PromptResultHandler&& completionHandler)
+{
     RefPtr manager = m_manager.get();
     ASSERT(manager);
-    if (!manager || !manager->page()) {
-        deny(UserMediaAccessDenialReason::PermissionDenied);
-        return;
-    }
+    if (!manager || !manager->page())
+        return completionHandler(false, std::nullopt, { }, { });
 
     MediaPermissionReason reason = MediaPermissionReason::Camera;
     if (requiresAudioCapture())
@@ -285,27 +312,30 @@ void UserMediaPermissionRequestProxy::promptForGetUserMedia()
 
     bool canPreview = requiresVideoCapture() || requiresAudioCapture();
     if (canPreview && protect(page->preferences())->captureDevicePreviewInPromptEnabled()) {
-        auto handles = alertForPermissionWithCapturePreview(page, { .reason = reason, .origin = topLevelDocumentSecurityOrigin().data(), .eligibleVideoDevices = m_eligibleVideoDevices, .eligibleAudioDevices = m_eligibleAudioDevices }, [this, protectedThis = Ref { *this }](CapturePreviewPromptResult&& result) {
+        auto handles = alertForPermissionWithCapturePreview(page, {
+            .reason = reason,
+            .origin = topLevelDocumentSecurityOrigin().data(),
+            .eligibleVideoDevices = m_eligibleVideoDevices,
+            .eligibleAudioDevices = m_eligibleAudioDevices,
+            .customization = WTF::move(customization),
+        }, [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](CapturePreviewPromptResult&& result) mutable {
             m_previewDeviceListUpdater = nullptr;
             m_previewPromptDismisser = nullptr;
-            if (!result.granted)
-                deny(UserMediaAccessDenialReason::PermissionDenied);
-            else
-                allow(result.selectedAudioDeviceUID, result.selectedVideoDeviceUID);
+            completionHandler(result.granted, result.chosenAdditionalActionIndex, WTF::move(result.selectedAudioDeviceUID), WTF::move(result.selectedVideoDeviceUID));
         });
         m_previewDeviceListUpdater = WTF::move(handles.deviceListUpdater);
         m_previewPromptDismisser = WTF::move(handles.promptDismisser);
         return;
     }
 
-    alertForPermission(page, reason, topLevelDocumentSecurityOrigin().data(), [this, protectedThis = Ref { *this }](bool granted) {
-        if (!granted)
-            deny(UserMediaAccessDenialReason::PermissionDenied);
-        else
-            allow();
+    // No preview means no device menus, so a grant from here uses whatever the eligible lists already
+    // order first.
+    alertForPermission(page, { .reason = reason, .origin = topLevelDocumentSecurityOrigin().data(), .customization = WTF::move(customization) }, [completionHandler = WTF::move(completionHandler)](PermissionPromptResult&& result) mutable {
+        completionHandler(result.granted, result.chosenAdditionalActionIndex, { }, { });
     });
-#endif
 }
+
+#endif // PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
 
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
 void UserMediaPermissionRequestProxy::devicesChanged()
