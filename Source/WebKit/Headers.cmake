@@ -399,13 +399,13 @@ list(APPEND WebKit_PRIVATE_FRAMEWORK_HEADERS
     UIProcess/API/Cocoa/_WKInspectorExtensionHost.h
     UIProcess/API/Cocoa/_WKInspectorIBActions.h
     UIProcess/API/Cocoa/_WKInspectorPrivate.h
-    UIProcess/API/Cocoa/_WKMediaCapturePermissionPromptConfiguration.h
     UIProcess/API/Cocoa/_WKInspectorPrivateForTesting.h
     UIProcess/API/Cocoa/_WKInspectorWindow.h
     UIProcess/API/Cocoa/_WKInternalDebugFeature.h
     UIProcess/API/Cocoa/_WKJSHandle.h
     UIProcess/API/Cocoa/_WKLayoutMode.h
     UIProcess/API/Cocoa/_WKLinkIconParameters.h
+    UIProcess/API/Cocoa/_WKMediaCapturePermissionPromptConfiguration.h
     UIProcess/API/Cocoa/_WKModalContainerInfo.h
     UIProcess/API/Cocoa/_WKNSStringExtras.h
     UIProcess/API/Cocoa/_WKNSURLExtras.h

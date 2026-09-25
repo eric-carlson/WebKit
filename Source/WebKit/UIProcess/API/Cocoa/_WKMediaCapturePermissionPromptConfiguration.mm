@@ -27,9 +27,8 @@
 #import "_WKMediaCapturePermissionPromptConfigurationInternal.h"
 
 #if ENABLE(MEDIA_STREAM)
-
 #import "Logging.h"
-#import <wtf/cocoa/VectorCocoa.h>
+#endif
 
 const NSUInteger _WKMediaCapturePermissionPromptMaximumAdditionalActions = WebKit::maximumPromptAdditionalActions;
 
@@ -60,6 +59,7 @@ const NSUInteger _WKMediaCapturePermissionPromptMaximumAdditionalActions = WebKi
 
 @implementation _WKMediaCapturePermissionPromptConfiguration {
     RetainPtr<NSString> _messageText;
+    RetainPtr<NSString> _informativeText;
     RetainPtr<NSString> _allowButtonTitle;
     RetainPtr<NSString> _denyButtonTitle;
     RetainPtr<NSArray<_WKMediaCapturePermissionAction *>> _additionalActions;
@@ -83,6 +83,16 @@ const NSUInteger _WKMediaCapturePermissionPromptMaximumAdditionalActions = WebKi
 - (void)setMessageText:(NSString *)messageText
 {
     _messageText = adoptNS([messageText copy]);
+}
+
+- (NSString *)informativeText
+{
+    return _informativeText.get();
+}
+
+- (void)setInformativeText:(NSString *)informativeText
+{
+    _informativeText = adoptNS([informativeText copy]);
 }
 
 - (NSString *)allowButtonTitle
@@ -159,6 +169,8 @@ const NSUInteger _WKMediaCapturePermissionPromptMaximumAdditionalActions = WebKi
 
 @end
 
+#if ENABLE(MEDIA_STREAM)
+
 namespace WebKit {
 
 MediaPermissionPromptCustomization customizationFromConfiguration(_WKMediaCapturePermissionPromptConfiguration *configuration)
@@ -168,6 +180,7 @@ MediaPermissionPromptCustomization customizationFromConfiguration(_WKMediaCaptur
 
     MediaPermissionPromptCustomization customization {
         .messageText = [configuration messageText],
+        .informativeText = [configuration informativeText],
         .allowButtonTitle = [configuration allowButtonTitle],
         .denyButtonTitle = [configuration denyButtonTitle],
     };

@@ -28,10 +28,10 @@
 
 NS_HEADER_AUDIT_BEGIN(nullability, sendability)
 
-/*! @abstract Whether activating an additional action grants or denies the request.
- @discussion An action declared as Allow behaves like the built-in allow button: the page is reported
- the device the user selected in the prompt. An action declared as Deny behaves like the built-in deny
- button.
+/*! @abstract Whether activating an additional action allows or denies.
+ @discussion The prompt reports the chosen action and whether it allows; the application still decides
+ the request through its decision handler. An Allow action, like the built-in allow button, reports the
+ devices the user selected.
  */
 typedef NS_ENUM(NSInteger, _WKMediaCapturePermissionActionDecision) {
     _WKMediaCapturePermissionActionDecisionDeny,
@@ -42,6 +42,9 @@ typedef NS_ENUM(NSInteger, _WKMediaCapturePermissionActionDecision) {
 typedef NS_ENUM(NSInteger, _WKMediaCapturePermissionPromptOutcome) {
     _WKMediaCapturePermissionPromptOutcomeAllowed,
     _WKMediaCapturePermissionPromptOutcomeDenied,
+    /*! @abstract The prompt closed, or was never shown, without the user answering: for example the
+     application decided the request while the prompt was up, or the request ended. */
+    _WKMediaCapturePermissionPromptOutcomeDismissed,
 } WK_API_AVAILABLE(macos(WK_MAC_TBA), ios(WK_IOS_TBA));
 
 /*! @abstract The number of additional actions WebKit will render. Any beyond this are ignored. */
@@ -53,6 +56,9 @@ WK_EXTERN const NSUInteger _WKMediaCapturePermissionPromptMaximumAdditionalActio
  */
 WK_CLASS_AVAILABLE(macos(WK_MAC_TBA), ios(WK_IOS_TBA))
 @interface _WKMediaCapturePermissionAction : NSObject
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
 
 + (instancetype)actionWithTitle:(NSString *)title decision:(_WKMediaCapturePermissionActionDecision)decision;
 
@@ -71,26 +77,43 @@ WK_CLASS_AVAILABLE(macos(WK_MAC_TBA), ios(WK_IOS_TBA))
 @interface _WKMediaCapturePermissionPromptConfiguration : NSObject
 
 @property (nonatomic, copy, nullable) NSString *messageText;
+
+/*! @abstract Text shown below the message.
+ @discussion Unlike the other strings this has no WebKit default, so the prompt shows no informative
+ text unless the application sets one.
+ */
+@property (nonatomic, copy, nullable) NSString *informativeText;
+
 @property (nonatomic, copy, nullable) NSString *allowButtonTitle;
 @property (nonatomic, copy, nullable) NSString *denyButtonTitle;
 
-/*! @abstract Buttons to add after the allow and deny buttons. Empty by default. */
+/*! @abstract Buttons shown between the allow and deny buttons. Empty by default. */
 @property (nonatomic, copy) NSArray<_WKMediaCapturePermissionAction *> *additionalActions;
 
 @end
 
 /*! @abstract What the user did with WebKit's capture permission prompt.
- @discussion chosenAction is nil when the user activated the built-in allow or deny button, and is
- otherwise the object from additionalActions that was activated. Actions are reported by identity, so
- compare the object rather than its title, which would break under localization.
+ @discussion outcome is Allowed when the user activated the built-in allow button or an additional
+ action whose decision is allow, and Denied otherwise. That includes WebKit dismissing the prompt
+ itself, being unable to show it, or finding no request being decided because the method was called
+ outside the UI delegate's capture permission callback.
+
+ The outcome does not decide the request. The application still has to call the decisionHandler that
+ WebKit passed to -[WKUIDelegate webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:],
+ and may pass a decision other than the outcome.
+
+ chosenAction is nil when the user activated the built-in allow or deny button, and is
+ otherwise the very object from additionalActions that was activated.
 
  cameraDeviceID and microphoneDeviceID name the devices the user selected, for an application that
- wants to show that choice in its own UI. They are the platform's persistent device identifiers, not
- the hashed values a page sees in MediaDeviceInfo.deviceId, so they cannot be correlated with
- anything the page reports. Both are nil unless the outcome allows capture of that kind.
+ wants to show that choice in its own UI. They are the platform's persistent device identifiers. Both
+ are nil unless the outcome allows capture of that kind.
  */
 WK_CLASS_AVAILABLE(macos(WK_MAC_TBA), ios(WK_IOS_TBA))
 @interface _WKMediaCapturePermissionPromptResult : NSObject
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
 
 @property (nonatomic, readonly) _WKMediaCapturePermissionPromptOutcome outcome;
 @property (nonatomic, readonly, nullable) _WKMediaCapturePermissionAction *chosenAction;

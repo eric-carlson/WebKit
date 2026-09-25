@@ -692,6 +692,7 @@ void GPUProcessProxy::webXRPromptAccepted(std::optional<WebCore::ProcessIdentity
 }
 #endif
 
+
 void GPUProcessProxy::updateProcessAssertion()
 {
     bool hasAnyForegroundWebProcesses = false;
@@ -922,16 +923,16 @@ void GPUProcessProxy::voiceActivityDetected()
         page->voiceActivityDetected();
 }
 
-void GPUProcessProxy::startMonitoringCaptureDeviceRotation(PageIdentifier pageID, const String& persistentId)
+void GPUProcessProxy::startMonitoringCaptureDeviceRotation(PageIdentifier pageID, const String& persistentId, bool forCapturePreview)
 {
     if (auto* page = WebProcessProxy::webPage(pageID))
-        page->startMonitoringCaptureDeviceRotation(persistentId);
+        page->startMonitoringCaptureDeviceRotation(persistentId, forCapturePreview);
 }
 
-void GPUProcessProxy::stopMonitoringCaptureDeviceRotation(PageIdentifier pageID, const String& persistentId)
+void GPUProcessProxy::stopMonitoringCaptureDeviceRotation(PageIdentifier pageID, const String& persistentId, bool forCapturePreview)
 {
     if (auto* page = WebProcessProxy::webPage(pageID))
-        page->stopMonitoringCaptureDeviceRotation(persistentId);
+        page->stopMonitoringCaptureDeviceRotation(persistentId, forCapturePreview);
 }
 
 void GPUProcessProxy::rotationAngleForCaptureDeviceChanged(const String& persistentId, WebCore::VideoFrameRotation rotation)
@@ -939,30 +940,46 @@ void GPUProcessProxy::rotationAngleForCaptureDeviceChanged(const String& persist
     send(Messages::GPUProcess::RotationAngleForCaptureDeviceChanged(persistentId, rotation), 0);
 }
 
-void GPUProcessProxy::startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier pageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, CompletionHandler<void(WebCore::HostingContext)>&& completionHandler)
+#if PLATFORM(COCOA)
+void GPUProcessProxy::startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier pageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, const WebCore::SecurityOriginData& origin, CompletionHandler<void(WebCore::HostingContext)>&& completionHandler)
 {
-    // Without the camera sandbox extension the GPU process cannot even resolve an
-    // AVCaptureDevice, so [AVCaptureDevice deviceWithUniqueID:] returns nil and source
-    // creation fails.
-    // FIXME: updateSandboxAccess is a one-way latch and nothing revokes these extensions, so a
-    // prompt the user denies still leaves the GPU process holding them for its lifetime. Previously
-    // they were only granted after a grant, by updateCaptureAccess.
-    updateSandboxAccess(!!audioDevice, !!videoDevice, false);
+    // Without these the GPU process cannot even resolve an AVCaptureDevice.
+    Vector<SandboxExtension::Handle> sandboxExtensions;
+    if (!m_useMockCaptureDevices) {
+        if (!m_capturePreviewSandboxAccess)
+            m_capturePreviewSandboxAccess = CapturePreviewSandboxAccess { pageIdentifier };
 
-    sendWithAsyncReply(Messages::GPUProcess::StartCapturePreview(WTF::move(videoDevice), WTF::move(audioDevice), pageIdentifier, previewSize, orientation), WTF::move(completionHandler));
+        auto& access = *m_capturePreviewSandboxAccess;
+        if (access.page == pageIdentifier) {
+            if (videoDevice && !m_hasSentCameraSandboxExtension && !access.camera)
+                access.camera = addCameraSandboxExtensions(sandboxExtensions);
+            if (audioDevice && !m_hasSentMicrophoneSandboxExtension && !access.microphone)
+                access.microphone = addMicrophoneSandboxExtension(sandboxExtensions);
+#if PLATFORM(IOS) || PLATFORM(VISION)
+            if ((videoDevice || audioDevice) && !m_hasSentTCCDSandboxExtension && !access.tccd)
+                access.tccd = addTCCDSandboxExtension(sandboxExtensions);
+#endif
+        }
+    }
+
+    sendWithAsyncReply(Messages::GPUProcess::StartCapturePreview(WTF::move(videoDevice), WTF::move(audioDevice), pageIdentifier, previewSize, orientation, WTF::move(sandboxExtensions), applicationBundleIdentifier(), origin), WTF::move(completionHandler));
 }
 
-void GPUProcessProxy::capturePreviewAudioLevelChanged(float level)
+void GPUProcessProxy::capturePreviewAudioLevelChanged(WebCore::PageIdentifier pageIdentifier, float level)
 {
-    if (m_capturePreviewAudioLevelHandler)
-        m_capturePreviewAudioLevelHandler(level);
+    auto iterator = m_capturePreviewAudioLevelHandlers.find(pageIdentifier);
+    if (iterator != m_capturePreviewAudioLevelHandlers.end())
+        iterator->value(level);
 }
 
-void GPUProcessProxy::stopCapturePreview(WebCore::PageIdentifier pageIdentifier)
+void GPUProcessProxy::stopCapturePreview(WebCore::PageIdentifier pageIdentifier, CompletionHandler<void()>&& completionHandler)
 {
-    m_capturePreviewAudioLevelHandler = nullptr;
-    send(Messages::GPUProcess::StopCapturePreview(pageIdentifier), 0);
+    m_capturePreviewAudioLevelHandlers.remove(pageIdentifier);
+    if (m_capturePreviewSandboxAccess && m_capturePreviewSandboxAccess->page == pageIdentifier)
+        m_capturePreviewSandboxAccess = std::nullopt;
+    sendWithAsyncReply(Messages::GPUProcess::StopCapturePreview(pageIdentifier), WTF::move(completionHandler));
 }
+#endif // PLATFORM(COCOA)
 
 void GPUProcessProxy::microphoneMuteStatusChanged(bool isMuting)
 {

@@ -5899,12 +5899,12 @@ static void convertAndAddHighlight(Vector<Ref<WebCore::SharedMemory>>& buffers, 
     // The supplied array is held so that the index the prompt reports can be mapped back to the object
     // the application passed in, which is how an action is identified.
     RetainPtr additionalActions = [configuration additionalActions];
-    protect(*_page)->showMediaCapturePermissionPrompt(WebKit::customizationFromConfiguration(configuration), [completionHandler = makeBlockPtr(completionHandler), additionalActions = WTF::move(additionalActions)](bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID) {
-        auto outcome = granted ? _WKMediaCapturePermissionPromptOutcomeAllowed : _WKMediaCapturePermissionPromptOutcomeDenied;
+    protect(*_page)->showMediaCapturePermissionPrompt(WebKit::customizationFromConfiguration(configuration), [completionHandler = makeBlockPtr(completionHandler), additionalActions = WTF::move(additionalActions)](WebKit::MediaPermissionPromptResult&& promptResult) {
+        auto outcome = !promptResult.wasAnswered ? _WKMediaCapturePermissionPromptOutcomeDismissed : promptResult.granted ? _WKMediaCapturePermissionPromptOutcomeAllowed : _WKMediaCapturePermissionPromptOutcomeDenied;
         RetainPtr result = adoptNS([[_WKMediaCapturePermissionPromptResult alloc] _initWithOutcome:outcome
-            chosenAction:WebKit::actionAtIndex(additionalActions.get(), chosenAdditionalActionIndex)
-            cameraDeviceID:selectedVideoDeviceUID.createNSString().get()
-            microphoneDeviceID:selectedAudioDeviceUID.createNSString().get()]);
+            chosenAction:WebKit::actionAtIndex(additionalActions.get(), promptResult.chosenAdditionalActionIndex)
+            cameraDeviceID:nsStringNilIfEmpty(promptResult.selectedVideoDeviceUID).get()
+            microphoneDeviceID:nsStringNilIfEmpty(promptResult.selectedAudioDeviceUID).get()]);
         completionHandler(result.get());
     });
 #else

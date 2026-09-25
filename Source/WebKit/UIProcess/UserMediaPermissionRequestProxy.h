@@ -31,7 +31,6 @@
 #include <wtf/text/WTFString.h>
 
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
-#include "MediaPermissionPromptCustomization.h"
 #include "MediaPermissionUtilities.h"
 #endif
 
@@ -51,17 +50,30 @@ public:
 
     void allow(const String& audioDeviceUID, const String& videoDeviceUID);
     void allow();
-    void applyDeviceSelection(const String& audioDeviceUID, const String& videoDeviceUID);
-    void preferDevices(const String& audioDeviceUID, const String& videoDeviceUID, unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount);
 #if ENABLE(MEDIA_STREAM)
-    void reapplyDeviceSelection(unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount);
+    struct DeviceUIDs {
+        String audioDeviceUID;
+        String videoDeviceUID;
+    };
+    struct BestMatchingDeviceCounts {
+        unsigned audio { 0 };
+        unsigned video { 0 };
+    };
+    void preferDevices(const DeviceUIDs&, BestMatchingDeviceCounts);
+    void reapplyDeviceSelection(BestMatchingDeviceCounts);
 #endif
     void promptForGetUserMedia();
 
+    // Speech recognition asks for the microphone through the same delegate as getUserMedia.
+    enum class Kind : uint8_t { UserMedia, SpeechRecognition };
+    Kind kind() const { return m_kind; }
+    void setKind(Kind kind) { m_kind = kind; }
+
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
     void devicesChanged();
+    void gpuProcessExited();
 
-    using PromptResultHandler = CompletionHandler<void(bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID)>;
+    using PromptResultHandler = CompletionHandler<void(MediaPermissionPromptResult&&)>;
     void showCapturePromptWithoutDeciding(MediaPermissionPromptCustomization&&, PromptResultHandler&&);
 #endif
     enum class UserMediaDisplayCapturePromptType { Window, Screen, UserChoose };
@@ -126,6 +138,7 @@ protected:
     UserMediaPermissionRequestManagerProxy* LEGACY_NODELETE manager() const;
 
 private:
+    void applyDeviceSelection(const String& audioDeviceUID, const String& videoDeviceUID);
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
     void showCapturePrompt(MediaPermissionPromptCustomization&&, PromptResultHandler&&);
 #endif
@@ -143,13 +156,16 @@ private:
     WebCore::MediaDeviceHashSalts m_deviceIdentifierHashSalts;
     CompletionHandler<void(bool)> m_decisionCompletionHandler;
     Function<void()> m_beforeStartingCaptureCallback;
+    Kind m_kind { Kind::UserMedia };
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
     CapturePreviewDeviceListUpdater m_previewDeviceListUpdater;
     CapturePreviewPromptDismisser m_previewPromptDismisser;
+    CapturePreviewRestarter m_previewRestarter;
+    bool m_isShowingPrompt { false };
+    bool m_grantWhenPromptCloses { false };
 #endif
 #if ENABLE(MEDIA_STREAM)
-    String m_selectedAudioDeviceUID;
-    String m_selectedVideoDeviceUID;
+    DeviceUIDs m_selectedDeviceUIDs;
     bool m_deviceSelectionWasExplicit { false };
 #endif
 };

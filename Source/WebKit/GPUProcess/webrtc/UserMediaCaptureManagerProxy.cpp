@@ -656,27 +656,56 @@ void UserMediaCaptureManagerProxy::startProducingData(RealtimeMediaSourceIdentif
     if (!proxy)
         return;
 
+    Ref source = proxy->source();
+    if (!applyCaptureEnvironment(source, pageIdentifier))
+        return;
+
+    m_connectionProxy->startProducingData(source->deviceType(), pageIdentifier);
+    proxy->start();
+}
+
+// The attribution, identity and media environment are process wide, so each start sets them for its own page.
+bool UserMediaCaptureManagerProxy::applyCaptureEnvironment(RealtimeMediaSource& source, WebCore::PageIdentifier pageIdentifier)
+{
     if (!m_connectionProxy->setCaptureAttributionString()) {
         RELEASE_LOG_ERROR(WebRTC, "Unable to set capture attribution, failing capture.");
-        return;
+        return false;
     }
-
-    Ref source = proxy->source();
 
 #if ENABLE(APP_PRIVACY_REPORT)
     m_connectionProxy->setTCCIdentity();
 #endif
 #if ENABLE(EXTENSION_CAPABILITIES) && !PLATFORM(IOS_FAMILY_SIMULATOR)
     bool hasValidMediaEnvironmentOrIdentity = m_connectionProxy->setCurrentMediaEnvironment(pageIdentifier) || RealtimeMediaSourceCenter::singleton().hasIdentity();
-    if (!hasValidMediaEnvironmentOrIdentity && source->deviceType() == CaptureDevice::DeviceType::Camera
+    if (!hasValidMediaEnvironmentOrIdentity && source.deviceType() == CaptureDevice::DeviceType::Camera
         && WTF::processHasEntitlement("com.apple.developer.web-browser-engine.rendering"_s)) {
         RELEASE_LOG_ERROR(WebRTC, "Unable to set media environment, failing capture.");
-        source->captureFailed();
-        return;
+        source.captureFailed();
+        return false;
     }
+#else
+    UNUSED_PARAM(source);
+    UNUSED_PARAM(pageIdentifier);
 #endif // ENABLE(EXTENSION_CAPABILITIES) && !PLATFORM(IOS_FAMILY_SIMULATOR)
-    m_connectionProxy->startProducingData(source->deviceType(), pageIdentifier);
-    proxy->start();
+    return true;
+}
+
+// A permission prompt's preview sets the same process-wide state for its own page. Capture that ran
+// through it, because the preview used another kind of device, takes the state back.
+void UserMediaCaptureManagerProxy::reapplyCaptureEnvironment()
+{
+    for (Ref proxy : m_proxies.values()) {
+        Ref source = proxy->source();
+        auto pageIdentifier = source->pageIdentifier();
+        if (!pageIdentifier || !source->isProducingData())
+            continue;
+
+        if (!applyCaptureEnvironment(source, *pageIdentifier))
+            RELEASE_LOG_ERROR(WebRTC, "UserMediaCaptureManagerProxy::reapplyCaptureEnvironment failed for a running capture");
+#if PLATFORM(IOS_FAMILY)
+        m_connectionProxy->providePresentingApplicationPID(*pageIdentifier);
+#endif
+    }
 }
 
 void UserMediaCaptureManagerProxy::stopProducingData(RealtimeMediaSourceIdentifier id)

@@ -13081,10 +13081,59 @@ static void LEGACY_NODELETE updateMutedCaptureKindsDesiredByWebApp(OptionSet<Web
 void WebPageProxy::setMuted(WebCore::MediaProducerMutedStateFlags state, FromApplication fromApplication, CompletionHandler<void()>&& completionHandler)
 {
 #if ENABLE(MEDIA_STREAM)
-    if (fromApplication == FromApplication::Yes)
+    if (fromApplication == FromApplication::Yes) {
         updateMutedCaptureKindsDesiredByWebApp(m_mutedCaptureKindsDesiredByWebApp, state);
+        // The application has taken over, so a capture preview ending must not undo its choice.
+        m_captureMutedByCapturePreview = { };
+    }
 #endif
 
+    applyMutedState(state, MuteCaptureInOtherPages::Yes, WTF::move(completionHandler));
+}
+
+#if ENABLE(MEDIA_STREAM)
+// Several prompts can pause a page at once; it resumes when the last of them ends.
+void WebPageProxy::beginCapturePreviewPause()
+{
+    ++m_capturePreviewPauseCount;
+}
+
+void WebPageProxy::pauseCaptureForCapturePreview(WebCore::MediaProducerMutedStateFlags captureKinds, CompletionHandler<void()>&& completionHandler)
+{
+    auto mediaState = reportedMediaState();
+    auto mutedState = mutedStateFlags();
+    WebCore::MediaProducerMutedStateFlags kindsToPause;
+    if (captureKinds.contains(WebCore::MediaProducerMutedState::AudioCaptureIsMuted) && mediaState.contains(WebCore::MediaProducerMediaState::HasActiveAudioCaptureDevice) && !mutedState.contains(WebCore::MediaProducerMutedState::AudioCaptureIsMuted))
+        kindsToPause.add(WebCore::MediaProducerMutedState::AudioCaptureIsMuted);
+    if (captureKinds.contains(WebCore::MediaProducerMutedState::VideoCaptureIsMuted) && mediaState.contains(WebCore::MediaProducerMediaState::HasActiveVideoCaptureDevice) && !mutedState.contains(WebCore::MediaProducerMutedState::VideoCaptureIsMuted))
+        kindsToPause.add(WebCore::MediaProducerMutedState::VideoCaptureIsMuted);
+    if (kindsToPause.isEmpty())
+        return completionHandler();
+
+    m_captureMutedByCapturePreview.add(kindsToPause);
+    applyMutedState(mutedState | kindsToPause, MuteCaptureInOtherPages::No, WTF::move(completionHandler));
+}
+
+void WebPageProxy::endCapturePreviewPause()
+{
+    ASSERT(m_capturePreviewPauseCount);
+    if (!m_capturePreviewPauseCount || --m_capturePreviewPauseCount)
+        return;
+
+    auto kindsToResume = std::exchange(m_captureMutedByCapturePreview, { });
+    if (kindsToResume.isEmpty())
+        return;
+
+    // Unmuting through setMuted would mute capture in every other page, but every page the preview
+    // paused resumes.
+    auto mutedState = mutedStateFlags();
+    mutedState.remove(kindsToResume);
+    applyMutedState(mutedState, MuteCaptureInOtherPages::No, [] { });
+}
+#endif
+
+void WebPageProxy::applyMutedState(WebCore::MediaProducerMutedStateFlags state, MuteCaptureInOtherPages muteCaptureInOtherPages, CompletionHandler<void()>&& completionHandler)
+{
     if (!isAllowedToChangeMuteState())
         state.add(WebCore::MediaProducer::MediaStreamCaptureIsMuted);
 
@@ -13102,8 +13151,10 @@ void WebPageProxy::setMuted(WebCore::MediaProducerMutedStateFlags state, FromApp
 
 #if ENABLE(MEDIA_STREAM)
     bool hasMutedCaptureStreams = internals().mediaState.containsAny(WebCore::MediaProducer::MutedCaptureMask);
-    if (hasMutedCaptureStreams && !(state.containsAny(WebCore::MediaProducer::MediaStreamCaptureIsMuted)))
+    if (muteCaptureInOtherPages == MuteCaptureInOtherPages::Yes && hasMutedCaptureStreams && !(state.containsAny(WebCore::MediaProducer::MediaStreamCaptureIsMuted)))
         WebProcessProxy::muteCaptureInPagesExcept(m_webPageID);
+#else
+    UNUSED_PARAM(muteCaptureInOtherPages);
 #endif // ENABLE(MEDIA_STREAM)
 
     forEachWebContentProcess([&] (auto& process, auto pageID) {
@@ -16393,7 +16444,7 @@ void WebPageProxy::clearUserMediaPermissionRequestHistory(WebCore::PermissionNam
 }
 
 #if PLATFORM(COCOA)
-void WebPageProxy::showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&& customization, CompletionHandler<void(bool, std::optional<size_t>, String, String)>&& completionHandler)
+void WebPageProxy::showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&& customization, CompletionHandler<void(MediaPermissionPromptResult&&)>&& completionHandler)
 {
     protect(userMediaPermissionRequestManager())->showMediaCapturePermissionPrompt(WTF::move(customization), WTF::move(completionHandler));
 }
@@ -16579,10 +16630,7 @@ void WebPageProxy::validateCaptureStateUpdate(IPC::Connection& connection, WebCo
             responseHandler->handle(true);
         });
 
-        Ref userMediaOrigin = API::SecurityOrigin::create(request->userMediaDocumentSecurityOrigin());
-        Ref topLevelOrigin = API::SecurityOrigin::create(request->topLevelDocumentSecurityOrigin());
-        // FIXME: Remove SUPPRESS_UNCOUNTED_ARG once rdar://144557500 is resolved.
-        uiClient().decidePolicyForUserMediaPermissionRequest(*this, *webFrame, userMediaOrigin, topLevelOrigin, request.get());
+        protect(userMediaPermissionRequestManager())->askDelegateToDecide(request);
     };
 
 
@@ -16645,24 +16693,31 @@ void WebPageProxy::voiceActivityDetected()
     send(Messages::WebPage::VoiceActivityDetected { });
 }
 
-void WebPageProxy::startMonitoringCaptureDeviceRotation(const String& persistentId)
+void WebPageProxy::startMonitoringCaptureDeviceRotation(const String& persistentId, bool forCapturePreview)
 {
 #if HAVE(AVCAPTUREDEVICEROTATIONCOORDINATOR)
     if (!m_preferences->useAVCaptureDeviceRotationCoordinatorAPI())
         return;
 
-    userMediaPermissionRequestManager().startMonitoringCaptureDeviceRotation(persistentId);
+    userMediaPermissionRequestManager().startMonitoringCaptureDeviceRotation(persistentId, forCapturePreview);
 #endif // HAVE(AVCAPTUREDEVICEROTATIONCOORDINATOR)
 }
 
-void WebPageProxy::stopMonitoringCaptureDeviceRotation(const String& persistentId)
+void WebPageProxy::stopMonitoringCaptureDeviceRotation(const String& persistentId, bool forCapturePreview)
 {
 #if HAVE(AVCAPTUREDEVICEROTATIONCOORDINATOR)
     if (!m_preferences->useAVCaptureDeviceRotationCoordinatorAPI())
         return;
 
-    userMediaPermissionRequestManager().stopMonitoringCaptureDeviceRotation(persistentId);
+    userMediaPermissionRequestManager().stopMonitoringCaptureDeviceRotation(persistentId, forCapturePreview);
 #endif // HAVE(AVCAPTUREDEVICEROTATIONCOORDINATOR)
+}
+
+void WebPageProxy::stopMonitoringCaptureDeviceRotationForCapturePreview()
+{
+#if HAVE(AVCAPTUREDEVICEROTATIONCOORDINATOR)
+    userMediaPermissionRequestManager().stopMonitoringCaptureDeviceRotationForCapturePreview();
+#endif
 }
 
 void WebPageProxy::rotationAngleForCaptureDeviceChanged(const String& persistentId, WebCore::VideoFrameRotation rotation)
@@ -19903,6 +19958,11 @@ void WebPageProxy::gpuProcessExited(ProcessTerminationReason)
 {
 #if HAVE(VISIBILITY_PROPAGATION_VIEW)
     m_contextIDForVisibilityPropagationInGPUProcess = 0;
+#endif
+
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+    if (RefPtr userMediaPermissionRequestManager = m_userMediaPermissionRequestManager)
+        userMediaPermissionRequestManager->gpuProcessExited();
 #endif
 
     if (RefPtr pageClient = this->pageClient())

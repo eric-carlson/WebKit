@@ -26,8 +26,10 @@
 #import "config.h"
 #import "WKCapturePreviewViewController.h"
 
-#if PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM)
+#if PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM) && !PLATFORM(APPLETV)
 
+#import "CapturePreviewDeviceSelection.h"
+#import "CapturePreviewLevelMeterState.h"
 #import "LayerHostingContext.h"
 #import "Logging.h"
 #import <WebCore/LocalizedStrings.h>
@@ -41,42 +43,37 @@
 #import <BrowserEngineKit/BELayerHierarchyHostingView.h>
 #endif
 
-enum class PreviewDeviceType : bool { Camera, Microphone };
+using PreviewDeviceType = WebKit::CapturePreviewDeviceType;
 
 constexpr CGFloat previewAspectRatio = 4.0 / 3.0;
 constexpr CGFloat contentSpacing = 16;
 constexpr CGFloat contentInset = 20;
+constexpr CGFloat informativeTextSpacing = 4;
 constexpr CGFloat decisionButtonSpacing = 28;
+constexpr CGFloat decisionButtonStackSpacing = 8;
 constexpr CGFloat promptCornerRadius = 16;
 constexpr CGFloat previewCornerRadius = 8;
 constexpr CGFloat promptTopMargin = 24;
+constexpr CGFloat promptSideMargin = 8;
 constexpr CGFloat sectionCornerRadius = 12;
 constexpr CGFloat sectionInset = 12;
-constexpr CGFloat audioLevelMeterHeight = 10;
 constexpr CGFloat audioLevelIconSpacing = 10;
 constexpr CGFloat previewBadgeInset = 8;
 constexpr CGFloat previewBadgeHorizontalPadding = 8;
 constexpr CGFloat previewBadgeVerticalPadding = 3;
 
-// A form sheet takes its size from preferredContentSize, so the content has to declare a width for
-// the preview and the device menus to be laid out against.
+// The custom presentation takes its size from preferredContentSize, so the content has to declare a width for
+// the preview and the device menus to be laid out against. This is the widest the prompt gets.
 constexpr CGFloat preferredContentWidth = 380;
 
-static CGFloat contentWidth()
+static CGFloat promptWidthForAvailableWidth(CGFloat availableWidth)
 {
-    return preferredContentWidth - 2 * contentInset;
+    CGFloat width = availableWidth - 2 * promptSideMargin;
+    return width > 0 ? std::min(preferredContentWidth, width) : preferredContentWidth;
 }
 
-// The camera and microphone each sit in an inset section, so the preview is narrower than the
-// content by that inset on both sides.
-static CGFloat previewWidth()
-{
-    return contentWidth() - 2 * sectionInset;
-}
-
-// The preview is rendered by the GPU process into a layer hosted here, so this view owns no content
-// of its own. The layer class matters: a CALayerHost cannot be added as a sublayer of an ordinary
-// layer and still receive a context id.
+// A CALayerHost added as a sublayer of an ordinary layer does not receive a context id, so it is
+// this view's own layer.
 @interface WKCapturePreviewLayerHostView : UIView
 @end
 
@@ -89,14 +86,11 @@ static CGFloat previewWidth()
 
 @end
 
-// A level meter that is never narrower than it is tall, so it reads as a level at rest rather than
-// as a divider. UIProgressView cannot do that: its track is a few points tall with square ends and
-// no minimum fill.
 @interface WKCapturePreviewAudioLevelView : UIView {
-    RetainPtr<UIView> _fill;
-    float _level;
+    WebKit::CapturePreviewLevelMeterState _state;
 }
 - (void)setLevel:(float)level;
+- (void)reset;
 @end
 
 @implementation WKCapturePreviewAudioLevelView
@@ -106,42 +100,61 @@ static CGFloat previewWidth()
     if (!(self = [super initWithFrame:CGRectZero]))
         return nil;
 
-    _level = 0;
-    [self setBackgroundColor:[UIColor secondarySystemFillColor]];
-    [self setClipsToBounds:YES];
+    [self setOpaque:NO];
+    [self setBackgroundColor:[UIColor clearColor]];
+    // Segments are spaced across the width, so a resize has to redraw rather than stretch them.
+    [self setContentMode:UIViewContentModeRedraw];
 
-    _fill = adoptNS([[UIView alloc] init]);
-    [_fill setBackgroundColor:[UIColor systemBlueColor]];
-    [self addSubview:_fill.get()];
+    [self setIsAccessibilityElement:YES];
+    [self setAccessibilityLabel:WEB_UI_STRING_KEY(@"Microphone level", "Microphone level (usermedia accessibility label)", @"Accessibility label for the microphone level meter in the user media prompt").createNSString().get()];
+    [self setAccessibilityTraits:UIAccessibilityTraitUpdatesFrequently];
 
     return self;
 }
 
+- (NSString *)accessibilityValue
+{
+    return [NSNumberFormatter localizedStringFromNumber:@(_state.levelFraction()) numberStyle:NSNumberFormatterPercentStyle];
+}
+
 - (CGSize)intrinsicContentSize
 {
-    return CGSizeMake(UIViewNoIntrinsicMetric, audioLevelMeterHeight);
+    return CGSizeMake(UIViewNoIntrinsicMetric, WebKit::CapturePreviewLevelMeterState::height);
 }
 
 - (void)setLevel:(float)level
 {
-    level = std::clamp(level, 0.f, 1.f);
-    if (_level == level)
-        return;
-
-    _level = level;
-    [self setNeedsLayout];
+    if (_state.update(level, MonotonicTime::now()))
+        [self setNeedsDisplay];
 }
 
-- (void)layoutSubviews
+- (void)reset
 {
-    [super layoutSubviews];
+    if (_state.reset())
+        [self setNeedsDisplay];
+}
 
+- (void)drawRect:(CGRect)rect
+{
+    using State = WebKit::CapturePreviewLevelMeterState;
     CGRect bounds = [self bounds];
-    CGFloat height = CGRectGetHeight(bounds);
-    [[self layer] setCornerRadius:height / 2];
 
-    [_fill setFrame:CGRectMake(0, 0, std::max(height, std::round(CGRectGetWidth(bounds) * _level)), height)];
-    [[_fill layer] setCornerRadius:height / 2];
+    for (unsigned index = 0; index < State::segmentCount; ++index) {
+        switch (_state.segment(index)) {
+        case State::Segment::Peak:
+            [[UIColor systemBlueColor] setFill];
+            break;
+        case State::Segment::Lit:
+            [[UIColor secondaryLabelColor] setFill];
+            break;
+        case State::Segment::Unlit:
+            [[UIColor secondarySystemFillColor] setFill];
+            break;
+        }
+
+        CGRect segment = CGRectMake(CGRectGetMinX(bounds) + State::segmentX(index, CGRectGetWidth(bounds)), CGRectGetMinY(bounds), State::segmentWidth, CGRectGetHeight(bounds));
+        [[UIBezierPath bezierPathWithRoundedRect:segment cornerRadius:State::segmentWidth / 2] fill];
+    }
 }
 
 @end
@@ -159,11 +172,14 @@ static CGFloat previewWidth()
     if (!containerView)
         return CGRectZero;
 
-    CGRect bounds = [containerView bounds];
+    // Taller content scrolls inside the prompt.
+    CGRect safeBounds = UIEdgeInsetsInsetRect([containerView bounds], [containerView safeAreaInsets]);
     CGSize contentSize = [[self presentedViewController] preferredContentSize];
-    CGFloat originX = CGRectGetMinX(bounds) + std::round((CGRectGetWidth(bounds) - contentSize.width) / 2);
-    CGFloat originY = CGRectGetMinY(bounds) + [containerView safeAreaInsets].top + promptTopMargin;
-    return CGRectMake(originX, originY, contentSize.width, contentSize.height);
+    CGFloat width = std::min(contentSize.width, CGRectGetWidth(safeBounds));
+    CGFloat height = std::max<CGFloat>(0, std::min(contentSize.height, CGRectGetHeight(safeBounds) - 2 * promptTopMargin));
+    CGFloat originX = CGRectGetMinX(safeBounds) + std::round((CGRectGetWidth(safeBounds) - width) / 2);
+    CGFloat originY = CGRectGetMinY(safeBounds) + promptTopMargin;
+    return CGRectMake(originX, originY, width, height);
 }
 
 - (void)presentationTransitionWillBegin
@@ -199,8 +215,12 @@ static CGFloat previewWidth()
 
 @end
 
+@interface WKCapturePreviewViewController () <UIViewControllerTransitioningDelegate>
+@end
+
 @implementation WKCapturePreviewViewController {
     RetainPtr<NSString> _alertTitle;
+    RetainPtr<NSString> _informativeText;
     RetainPtr<NSString> _allowButtonTitle;
     RetainPtr<NSString> _denyButtonTitle;
 
@@ -217,89 +237,91 @@ static CGFloat previewWidth()
     RetainPtr<UIButton> _audioButton;
     RetainPtr<WKCapturePreviewAudioLevelView> _audioLevelMeter;
 
-    Vector<WebCore::CaptureDevice> _videoDevices;
-    Vector<WebCore::CaptureDevice> _audioDevices;
-    size_t _selectedVideoDeviceIndex;
-    size_t _selectedAudioDeviceIndex;
-    BOOL _requestNeedsVideo;
-    BOOL _requestNeedsAudio;
+    WebKit::CapturePreviewDeviceSelection _selection;
+    // Capture waits for the prompt to be on screen, so the camera is never on behind a prompt not yet shown.
+    BOOL _isPreviewing;
+    BOOL _hasStopped;
+    BOOL _shouldDismissOnceVisible;
+    CGFloat _promptWidth;
+    RetainPtr<UIScrollView> _scrollView;
+    RetainPtr<UILabel> _titleLabel;
+    RetainPtr<UILabel> _informativeLabel;
 
     Vector<WebKit::MediaPermissionPromptAdditionalAction> _additionalActions;
 
     Function<void(std::optional<WebCore::CaptureDevice>&&, std::optional<WebCore::CaptureDevice>&&)> _selectionChangedHandler;
-    CompletionHandler<void(bool, std::optional<size_t>)> _decisionHandler;
+    CompletionHandler<void(WebKit::MediaPermissionPromptResult&&)> _decisionHandler;
 }
 
-- (instancetype)initWithTitle:(NSString *)alertTitle allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
+- (instancetype)initWithAvailableSize:(CGSize)availableSize title:(NSString *)alertTitle informativeText:(NSString *)informativeText allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
 {
     if (!(self = [super initWithNibName:nil bundle:nil]))
         return nil;
 
     _alertTitle = alertTitle;
+    _informativeText = informativeText;
     _allowButtonTitle = allowButtonTitle;
     _denyButtonTitle = denyButtonTitle;
     _additionalActions = WTF::move(additionalActions);
-    _videoDevices = WTF::move(videoDevices);
-    _audioDevices = WTF::move(audioDevices);
-    _requestNeedsVideo = !_videoDevices.isEmpty();
-    _requestNeedsAudio = !_audioDevices.isEmpty();
-    _selectedVideoDeviceIndex = 0;
-    _selectedAudioDeviceIndex = 0;
+    _selection = { WTF::move(videoDevices), WTF::move(audioDevices) };
+
+    _promptWidth = promptWidthForAvailableWidth(availableSize.width);
 
     self.modalPresentationStyle = UIModalPresentationCustom;
     self.transitioningDelegate = self;
-    // A permission request has to be answered, so the only ways out are the two buttons.
-    self.modalInPresentation = YES;
 
     return self;
 }
 
-+ (CGSize)previewSize
+- (CGFloat)_contentWidth
 {
-    return CGSizeMake(previewWidth(), std::round(previewWidth() / previewAspectRatio));
+    return _promptWidth - 2 * contentInset;
+}
+
+- (CGFloat)_previewWidth
+{
+    return [self _contentWidth] - 2 * sectionInset;
+}
+
+- (CGSize)previewSize
+{
+    CGFloat width = [self _previewWidth];
+    return CGSizeMake(width, std::round(width / previewAspectRatio));
 }
 
 - (void)dealloc
 {
-    if (_decisionHandler)
-        _decisionHandler(false, std::nullopt);
+    if (_decisionHandler) {
+        RELEASE_LOG_ERROR(WebRTC, "WKCapturePreviewViewController was never answered, and probably never shown");
+        _decisionHandler({ });
+    }
     [super dealloc];
-}
-
-- (std::optional<WebCore::CaptureDevice>)_selectedVideoDevice
-{
-    if (!_requestNeedsVideo || _selectedVideoDeviceIndex >= _videoDevices.size())
-        return std::nullopt;
-    return _videoDevices[_selectedVideoDeviceIndex];
-}
-
-- (std::optional<WebCore::CaptureDevice>)_selectedAudioDevice
-{
-    if (!_requestNeedsAudio || _selectedAudioDeviceIndex >= _audioDevices.size())
-        return std::nullopt;
-    return _audioDevices[_selectedAudioDeviceIndex];
 }
 
 - (NSString *)selectedVideoDeviceID
 {
-    auto device = [self _selectedVideoDevice];
-    return device ? device->persistentId().createNSString().autorelease() : nil;
+    return nsStringNilIfEmpty(_selection.selectedDeviceID(PreviewDeviceType::Camera)).autorelease();
 }
 
 - (NSString *)selectedAudioDeviceID
 {
-    auto device = [self _selectedAudioDevice];
-    return device ? device->persistentId().createNSString().autorelease() : nil;
+    return nsStringNilIfEmpty(_selection.selectedDeviceID(PreviewDeviceType::Microphone)).autorelease();
 }
 
 - (void)setSelectionChangedHandler:(Function<void(std::optional<WebCore::CaptureDevice>&&, std::optional<WebCore::CaptureDevice>&&)>&&)handler
 {
+    if (_hasStopped)
+        return;
     _selectionChangedHandler = WTF::move(handler);
-    if ([self isViewLoaded])
-        [self _notifySelectionChanged];
+    [self _notifySelectionChanged];
 }
 
-- (void)setDecisionHandler:(CompletionHandler<void(bool, std::optional<size_t>)>&&)handler
+- (BOOL)isStopped
+{
+    return _hasStopped;
+}
+
+- (void)setDecisionHandler:(CompletionHandler<void(WebKit::MediaPermissionPromptResult&&)>&&)handler
 {
     _decisionHandler = WTF::move(handler);
 }
@@ -309,17 +331,21 @@ static CGFloat previewWidth()
     [super viewDidLoad];
 
     [[self view] setBackgroundColor:[UIColor systemGroupedBackgroundColor]];
+    // The request has to be answered here, so VoiceOver must not wander to the page behind it.
+    [[self view] setAccessibilityViewIsModal:YES];
     [[self view] setClipsToBounds:YES];
     [[[self view] layer] setCornerRadius:promptCornerRadius];
 
     RetainPtr titleLabel = adoptNS([[UILabel alloc] init]);
+    _titleLabel = titleLabel;
     [titleLabel setText:_alertTitle.get()];
     [titleLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    [titleLabel setAdjustsFontForContentSizeCategory:YES];
     [titleLabel setNumberOfLines:0];
     [titleLabel setLineBreakMode:NSLineBreakByWordWrapping];
     // Without this a multi-line label reports a single line as its intrinsic size, so the prompt is
     // measured too short and the title is truncated rather than wrapped.
-    [titleLabel setPreferredMaxLayoutWidth:contentWidth()];
+    [titleLabel setPreferredMaxLayoutWidth:[self _contentWidth]];
     [titleLabel setTextAlignment:NSTextAlignmentCenter];
 
     _previewContainer = adoptNS([[UIView alloc] init]);
@@ -327,17 +353,12 @@ static CGFloat previewWidth()
     [_previewContainer setClipsToBounds:YES];
     [[_previewContainer layer] setCornerRadius:previewCornerRadius];
 
-    RetainPtr buttonRow = adoptNS([[UIStackView alloc] init]);
-    [buttonRow setAxis:UILayoutConstraintAxisHorizontal];
-    [buttonRow setDistribution:UIStackViewDistributionFillEqually];
-    [buttonRow setSpacing:contentSpacing];
-
     RetainPtr denyConfiguration = [UIButtonConfiguration grayButtonConfiguration];
     [denyConfiguration setTitle:_denyButtonTitle.get()];
     [denyConfiguration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
     RetainPtr denyButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [denyButton setConfiguration:denyConfiguration.get()];
-    [denyButton addTarget:self action:@selector(deny) forControlEvents:UIControlEventTouchUpInside];
+    [denyButton addTarget:self action:@selector(_deny) forControlEvents:UIControlEventTouchUpInside];
 
     RetainPtr allowConfiguration = [UIButtonConfiguration filledButtonConfiguration];
     [allowConfiguration setTitle:_allowButtonTitle.get()];
@@ -348,8 +369,32 @@ static CGFloat previewWidth()
 
     _allowButtons = adoptNS([[NSMutableArray alloc] initWithObjects:allowButton.get(), nil]);
 
-    [buttonRow addArrangedSubview:denyButton.get()];
-    [buttonRow addArrangedSubview:allowButton.get()];
+    // Stacked rather than side by side, so buttons the application adds line up with Allow and
+    // Don't Allow instead of reading as a separate group.
+    RetainPtr decisionButtons = adoptNS([[UIStackView alloc] init]);
+    [decisionButtons setAxis:UILayoutConstraintAxisVertical];
+    [decisionButtons setSpacing:decisionButtonStackSpacing];
+    [decisionButtons addArrangedSubview:allowButton.get()];
+
+    for (size_t index = 0; index < _additionalActions.size(); ++index) {
+        auto& action = _additionalActions[index];
+        RetainPtr configuration = [UIButtonConfiguration grayButtonConfiguration];
+        [configuration setTitle:action.title.createNSString().get()];
+        [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
+        // A title long enough to need two lines is the case these buttons exist for.
+        [configuration setTitleLineBreakMode:NSLineBreakByWordWrapping];
+
+        RetainPtr additionalAction = [UIAction actionWithTitle:@"" image:nil identifier:nil handler:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self), index](UIAction *) {
+            [weakSelf.get() _activateAdditionalActionAtIndex:index];
+        }];
+        RetainPtr additionalButton = [UIButton buttonWithConfiguration:configuration.get() primaryAction:additionalAction.get()];
+        [decisionButtons addArrangedSubview:additionalButton.get()];
+
+        if (action.decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow)
+            [_allowButtons addObject:additionalButton.get()];
+    }
+
+    [decisionButtons addArrangedSubview:denyButton.get()];
 
     _contentStack = adoptNS([[UIStackView alloc] init]);
     [_contentStack setAxis:UILayoutConstraintAxisVertical];
@@ -359,7 +404,23 @@ static CGFloat previewWidth()
 
     RetainPtr<UIView> lastViewBeforeDecisionButtons = titleLabel;
 
-    if (_requestNeedsVideo) {
+    if (_informativeText) {
+        RetainPtr informativeLabel = adoptNS([[UILabel alloc] init]);
+        _informativeLabel = informativeLabel;
+        [informativeLabel setText:_informativeText.get()];
+        [informativeLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
+        [informativeLabel setAdjustsFontForContentSizeCategory:YES];
+        [informativeLabel setNumberOfLines:0];
+        [informativeLabel setLineBreakMode:NSLineBreakByWordWrapping];
+        [informativeLabel setPreferredMaxLayoutWidth:[self _contentWidth]];
+        [informativeLabel setTextAlignment:NSTextAlignmentCenter];
+        [_contentStack addArrangedSubview:informativeLabel.get()];
+        // Kept close to the title so the two read as one block of text, as in a system alert.
+        [_contentStack setCustomSpacing:informativeTextSpacing afterView:titleLabel.get()];
+        lastViewBeforeDecisionButtons = informativeLabel;
+    }
+
+    if (_selection.requestNeeds(PreviewDeviceType::Camera)) {
         _videoButton = [self _createDeviceButtonForDeviceType:PreviewDeviceType::Camera];
 
         _previewBadge = adoptNS([[UIView alloc] init]);
@@ -370,6 +431,7 @@ static CGFloat previewWidth()
         RetainPtr badgeLabel = adoptNS([[UILabel alloc] init]);
         [badgeLabel setText:WEB_UI_STRING_KEY(@"Preview", "Preview (usermedia)", @"Badge label identifying the live camera preview in the user media prompt").createNSString().get()];
         [badgeLabel setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleCaption1]];
+        [badgeLabel setAdjustsFontForContentSizeCategory:YES];
         [badgeLabel setTextColor:[UIColor whiteColor]];
         [badgeLabel setTranslatesAutoresizingMaskIntoConstraints:NO];
         [_previewBadge addSubview:badgeLabel.get()];
@@ -394,11 +456,13 @@ static CGFloat previewWidth()
         lastViewBeforeDecisionButtons = cameraSection;
     }
 
-    if (_requestNeedsAudio) {
+    if (_selection.requestNeeds(PreviewDeviceType::Microphone)) {
         _audioButton = [self _createDeviceButtonForDeviceType:PreviewDeviceType::Microphone];
 
         RetainPtr microphoneIcon = adoptNS([[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"mic" withConfiguration:[UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleBody]]]);
         [microphoneIcon setTintColor:[UIColor secondaryLabelColor]];
+        // Decorative: the meter and the device button beside it carry the meaning.
+        [microphoneIcon setIsAccessibilityElement:NO];
         // Without this the stack has two views it may stretch, and it picks the icon.
         [microphoneIcon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 
@@ -422,50 +486,105 @@ static CGFloat previewWidth()
         lastViewBeforeDecisionButtons = microphoneSection;
     }
 
-    [_contentStack addArrangedSubview:buttonRow.get()];
+    [_contentStack addArrangedSubview:decisionButtons.get()];
     [_contentStack setCustomSpacing:decisionButtonSpacing afterView:lastViewBeforeDecisionButtons.get()];
+    // The prompt is clamped to the screen, so in landscape or at a large text size the buttons can
+    // only be reached by scrolling.
+    _scrollView = adoptNS([[UIScrollView alloc] init]);
+    [_scrollView setTranslatesAutoresizingMaskIntoConstraints:NO];
+    [_scrollView addSubview:_contentStack.get()];
+    [[self view] addSubview:_scrollView.get()];
 
-    for (size_t index = 0; index < _additionalActions.size(); ++index) {
-        auto& action = _additionalActions[index];
-        RetainPtr configuration = [UIButtonConfiguration grayButtonConfiguration];
-        [configuration setTitle:action.title.createNSString().get()];
-        [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
-        // A title long enough to need two lines is the case these buttons exist for.
-        [configuration setTitleLineBreakMode:NSLineBreakByWordWrapping];
-
-        RetainPtr additionalAction = [UIAction actionWithTitle:@"" image:nil identifier:nil handler:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self), index](UIAction *) {
-            [weakSelf.get() _activateAdditionalActionAtIndex:index];
-        }];
-        RetainPtr additionalButton = [UIButton buttonWithConfiguration:configuration.get() primaryAction:additionalAction.get()];
-        [_contentStack addArrangedSubview:additionalButton.get()];
-
-        if (action.decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow)
-            [_allowButtons addObject:additionalButton.get()];
-    }
-    [[self view] addSubview:_contentStack.get()];
-
-    // Pinned to the view rather than its layout margins guide, which would inset the stack by a
-    // further unknown amount: contentWidth() has to be the width the content really gets, or the
-    // title measures as one line and then truncates, and the preview layer stops filling its
-    // container.
+    // Not a layout margins guide, whose extra inset would make -_contentWidth wrong: the title would
+    // measure as one line and truncate, and the preview layer would stop filling its container.
     RetainPtr view = [self view];
+    RetainPtr contentGuide = [_scrollView contentLayoutGuide];
+    RetainPtr frameGuide = [_scrollView frameLayoutGuide];
     NSMutableArray *constraints = [NSMutableArray array];
     [constraints addObjectsFromArray:@[
-        [[_contentStack topAnchor] constraintEqualToAnchor:[view topAnchor] constant:contentInset],
-        [[_contentStack leadingAnchor] constraintEqualToAnchor:[view leadingAnchor] constant:contentInset],
-        [[_contentStack trailingAnchor] constraintEqualToAnchor:[view trailingAnchor] constant:-contentInset],
-        [[_contentStack bottomAnchor] constraintLessThanOrEqualToAnchor:[view bottomAnchor] constant:-contentInset],
+        [[_scrollView topAnchor] constraintEqualToAnchor:[view topAnchor]],
+        [[_scrollView bottomAnchor] constraintEqualToAnchor:[view bottomAnchor]],
+        [[_scrollView leadingAnchor] constraintEqualToAnchor:[view leadingAnchor]],
+        [[_scrollView trailingAnchor] constraintEqualToAnchor:[view trailingAnchor]],
+        [[_contentStack topAnchor] constraintEqualToAnchor:[contentGuide topAnchor] constant:contentInset],
+        [[_contentStack bottomAnchor] constraintEqualToAnchor:[contentGuide bottomAnchor] constant:-contentInset],
+        [[_contentStack leadingAnchor] constraintEqualToAnchor:[frameGuide leadingAnchor] constant:contentInset],
+        [[_contentStack trailingAnchor] constraintEqualToAnchor:[frameGuide trailingAnchor] constant:-contentInset],
     ]];
-    if (_requestNeedsVideo) {
-        // Not required: if the sheet is ever shorter than the content, the preview should give way
-        // rather than the title being pushed out of view.
-        RetainPtr aspectRatio = [[_previewContainer widthAnchor] constraintEqualToAnchor:[_previewContainer heightAnchor] multiplier:previewAspectRatio];
-        [aspectRatio setPriority:UILayoutPriorityRequired - 1];
-        [constraints addObject:aspectRatio.get()];
-    }
+    if (_selection.requestNeeds(PreviewDeviceType::Camera))
+        [constraints addObject:[[_previewContainer widthAnchor] constraintEqualToAnchor:[_previewContainer heightAnchor] multiplier:previewAspectRatio]];
     [NSLayoutConstraint activateConstraints:constraints];
 
+    // The device list may have changed before the view loaded.
+    [self _updateAllowButtonEnablement];
     [self _updatePreferredContentSize];
+
+    [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ] withTarget:self action:@selector(_contentSizeCategoryDidChange)];
+}
+
+// Labels follow the text size on their own, but the prompt's height has to be measured again.
+- (void)_contentSizeCategoryDidChange
+{
+    [self _updatePreferredContentSize];
+    [[[self presentationController] containerView] setNeedsLayout];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+
+    if (_shouldDismissOnceVisible) {
+        _shouldDismissOnceVisible = NO;
+        [self dismissViewControllerAnimated:YES completion:nil];
+        return;
+    }
+
+    // For the Escape key command.
+    [self becomeFirstResponder];
+
+    if ([_scrollView contentSize].height > CGRectGetHeight([_scrollView bounds]))
+        [_scrollView flashScrollIndicators];
+
+    if (_isPreviewing || _hasStopped)
+        return;
+    _isPreviewing = YES;
+    [self _notifySelectionChanged];
+}
+
+- (void)dismissWhenPossible
+{
+    // UIKit ignores a dismissal while the presentation is still animating, which would leave a prompt
+    // on screen whose buttons no longer do anything.
+    if ([self isBeingPresented]) {
+        _shouldDismissOnceVisible = YES;
+        return;
+    }
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator
+{
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+
+    [coordinator animateAlongsideTransition:nil completion:[weakSelf = WeakObjCPtr<WKCapturePreviewViewController>(self)](id<UIViewControllerTransitionCoordinatorContext>) {
+        [weakSelf.get() _availableSizeDidChange];
+    }];
+}
+
+// After a rotation the width chosen at creation can be too wide or needlessly narrow.
+- (void)_availableSizeDidChange
+{
+    CGFloat promptWidth = promptWidthForAvailableWidth([[self presentingViewController] view].safeAreaLayoutGuide.layoutFrame.size.width);
+    if (promptWidth == _promptWidth)
+        return;
+
+    _promptWidth = promptWidth;
+    [_titleLabel setPreferredMaxLayoutWidth:[self _contentWidth]];
+    [_informativeLabel setPreferredMaxLayoutWidth:[self _contentWidth]];
+    [self _updatePreferredContentSize];
+    [[[self presentationController] containerView] setNeedsLayout];
+
+    // The GPU process renders the preview at -previewSize, so it rebuilds the layer at the new width.
     [self _notifySelectionChanged];
 }
 
@@ -479,10 +598,8 @@ static CGFloat previewWidth()
 
 - (void)_updatePreferredContentSize
 {
-    // A form sheet is sized from preferredContentSize, and without it the sheet opens at a default
-    // size too short for the content: the title clips and the device menus collide.
-    CGSize fittingSize = [_contentStack systemLayoutSizeFittingSize:CGSizeMake(contentWidth(), UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-    self.preferredContentSize = CGSizeMake(preferredContentWidth, fittingSize.height + 2 * contentInset);
+    CGSize fittingSize = [_contentStack systemLayoutSizeFittingSize:CGSizeMake([self _contentWidth], UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    self.preferredContentSize = CGSizeMake(_promptWidth, fittingSize.height + 2 * contentInset);
 }
 
 - (UIPresentationController *)presentationControllerForPresentedViewController:(UIViewController *)presented presentingViewController:(UIViewController *)presenting sourceViewController:(UIViewController *)source
@@ -520,15 +637,20 @@ static CGFloat previewWidth()
     [configuration setCornerStyle:UIButtonConfigurationCornerStyleMedium];
     [button setConfiguration:configuration.get()];
 
+    // The title is only the device's name, which says nothing about what the button chooses.
+    if (deviceType == PreviewDeviceType::Camera)
+        [button setAccessibilityLabel:WEB_UI_STRING_KEY(@"Camera", "Camera (usermedia accessibility label)", @"Accessibility label for the camera menu in the user media prompt").createNSString().get()];
+    else
+        [button setAccessibilityLabel:WEB_UI_STRING_KEY(@"Microphone", "Microphone (usermedia accessibility label)", @"Accessibility label for the microphone menu in the user media prompt").createNSString().get()];
+
     [self _updateMenuForButton:button.get() deviceType:deviceType];
     return button.autorelease();
 }
 
 - (void)_updateMenuForButton:(UIButton *)button deviceType:(PreviewDeviceType)deviceType
 {
-    bool isCamera = deviceType == PreviewDeviceType::Camera;
-    auto& devices = isCamera ? _videoDevices : _audioDevices;
-    size_t selectedIndex = isCamera ? _selectedVideoDeviceIndex : _selectedAudioDeviceIndex;
+    auto& devices = _selection.devices(deviceType);
+    size_t selectedIndex = _selection.selectedIndex(deviceType);
 
     // Actions are built per device rather than from labels so that two devices sharing a label still
     // get separate entries, and so the index survives a device list update.
@@ -546,22 +668,26 @@ static CGFloat previewWidth()
     }
 
     [button setMenu:[UIMenu menuWithTitle:@"" children:actions]];
+
+    // Hidden rather than left showing the name of a device that was unplugged.
+    [button setHidden:devices.isEmpty()];
+    [button setEnabled:devices.size() > 1];
     if (selectedIndex < devices.size()) {
+        RetainPtr title = devices[selectedIndex].label().createNSString();
         RetainPtr configuration = [button configuration];
-        [configuration setTitle:devices[selectedIndex].label().createNSString().get()];
+        [configuration setTitle:title.get()];
         [button setConfiguration:configuration.get()];
+        [button setAccessibilityValue:title.get()];
     }
 }
 
 - (void)_didSelectDeviceAtIndex:(size_t)index deviceType:(PreviewDeviceType)deviceType
 {
-    bool isCamera = deviceType == PreviewDeviceType::Camera;
-    if (isCamera)
-        _selectedVideoDeviceIndex = index;
-    else
-        _selectedAudioDeviceIndex = index;
+    if (index >= _selection.devices(deviceType).size())
+        return;
 
-    [self _updateMenuForButton:isCamera ? _videoButton.get() : _audioButton.get() deviceType:deviceType];
+    _selection.select(deviceType, index);
+    [self _updateMenuForButton:deviceType == PreviewDeviceType::Camera ? _videoButton.get() : _audioButton.get() deviceType:deviceType];
     [self _notifySelectionChanged];
 }
 
@@ -572,16 +698,18 @@ static CGFloat previewWidth()
 
 - (void)_notifySelectionChanged
 {
-    if (!_selectionChangedHandler)
+    if (!_selectionChangedHandler || !_isPreviewing || _hasStopped)
         return;
 
-    _selectionChangedHandler([self _selectedVideoDevice], [self _selectedAudioDevice]);
+    _selectionChangedHandler(_selection.selectedDevice(PreviewDeviceType::Camera), _selection.selectedDevice(PreviewDeviceType::Microphone));
 }
 
 - (void)setPreviewHostingContext:(const WebCore::HostingContext&)hostingContext gpuProcessIdentifier:(ProcessID)gpuProcessIdentifier
 {
-    // An unchanged context id means the video source was untouched, as when only the microphone
-    // selection moved; rebuilding the view then would flicker the preview for no reason.
+    // A start that was still in flight can reply after the prompt stopped; its layer must not come back.
+    if (_hasStopped && hostingContext.contextID)
+        return;
+
     if (_previewLayerHost && hostingContext.contextID == _previewHostingContextID)
         return;
 
@@ -642,52 +770,30 @@ static CGFloat previewWidth()
 
 - (void)updateWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices
 {
-    // The selected device is preserved by identity, not by index: an earlier device being unplugged
-    // would otherwise silently move the selection to a different camera.
-    auto selectedDeviceID = [](const Vector<WebCore::CaptureDevice>& devices, size_t index) {
-        return index < devices.size() ? devices[index].persistentId() : String { };
-    };
-    String selectedVideoDeviceID = selectedDeviceID(_videoDevices, _selectedVideoDeviceIndex);
-    String selectedAudioDeviceID = selectedDeviceID(_audioDevices, _selectedAudioDeviceIndex);
-
-    _videoDevices = WTF::move(videoDevices);
-    _audioDevices = WTF::move(audioDevices);
-
-    auto indexOfDevice = [](const Vector<WebCore::CaptureDevice>& devices, const String& deviceID) -> size_t {
-        if (deviceID.isEmpty())
-            return 0;
-        size_t index = devices.findIf([&deviceID](auto& device) {
-            return device.persistentId() == deviceID;
-        });
-        return index == notFound ? 0 : index;
-    };
-
-    _selectedVideoDeviceIndex = indexOfDevice(_videoDevices, selectedVideoDeviceID);
-    _selectedAudioDeviceIndex = indexOfDevice(_audioDevices, selectedAudioDeviceID);
+    bool previewNeedsRestart = _selection.update(WTF::move(videoDevices), WTF::move(audioDevices));
 
     if (_videoButton)
         [self _updateMenuForButton:_videoButton.get() deviceType:PreviewDeviceType::Camera];
     if (_audioButton)
         [self _updateMenuForButton:_audioButton.get() deviceType:PreviewDeviceType::Microphone];
 
-    // A meter left at its last value after the microphone was unplugged would read as a live signal
-    // from a device that is gone.
-    if (_audioDevices.isEmpty())
-        [self setAudioLevel:0];
+    // A level or peak left showing after the microphone was unplugged would read as a live signal
+    // from a device that is no longer available.
+    if (_selection.devices(PreviewDeviceType::Microphone).isEmpty())
+        [_audioLevelMeter reset];
 
     if ([self isViewLoaded]) {
         [self _updateAllowButtonEnablement];
         [self _updatePreferredContentSize];
     }
 
-    [self _notifySelectionChanged];
+    if (previewNeedsRestart)
+        [self _notifySelectionChanged];
 }
 
 - (void)_updateAllowButtonEnablement
 {
-    // Unplugging the last device of a requested kind leaves nothing to grant, so Allow must not stay
-    // tappable with a stale label.
-    bool canStillSatisfyRequest = !(_requestNeedsVideo && _videoDevices.isEmpty()) && !(_requestNeedsAudio && _audioDevices.isEmpty());
+    bool canStillSatisfyRequest = _selection.canStillSatisfyRequest();
     for (UIButton *allowButton in _allowButtons.get())
         [allowButton setEnabled:canStillSatisfyRequest];
 }
@@ -695,13 +801,36 @@ static CGFloat previewWidth()
 - (void)_allow
 {
     if (auto handler = WTF::move(_decisionHandler))
-        handler(true, std::nullopt);
+        handler({ .granted = true, .wasAnswered = true });
 }
 
-- (void)deny
+- (void)_deny
 {
     if (auto handler = WTF::move(_decisionHandler))
-        handler(false, std::nullopt);
+        handler({ .granted = false, .wasAnswered = true });
+}
+
+// Escape is Don't Allow, as on macOS.
+- (BOOL)accessibilityPerformEscape
+{
+    [self _deny];
+    return YES;
+}
+
+- (BOOL)canBecomeFirstResponder
+{
+    return YES;
+}
+
+- (NSArray<UIKeyCommand *> *)keyCommands
+{
+    return @[ [UIKeyCommand keyCommandWithInput:UIKeyInputEscape modifierFlags:0 action:@selector(_deny)] ];
+}
+
+- (void)dismissWithoutAnswer
+{
+    if (auto handler = WTF::move(_decisionHandler))
+        handler({ });
 }
 
 - (void)_activateAdditionalActionAtIndex:(size_t)index
@@ -709,16 +838,17 @@ static CGFloat previewWidth()
     ASSERT(index < _additionalActions.size());
     bool granted = _additionalActions[index].decision == WebKit::MediaPermissionPromptAdditionalAction::Decision::Allow;
     if (auto handler = WTF::move(_decisionHandler))
-        handler(granted, index);
+        handler({ .granted = granted, .wasAnswered = true, .chosenAdditionalActionIndex = index });
 }
 
 - (void)stop
 {
+    _hasStopped = YES;
     _selectionChangedHandler = nullptr;
-    [self setAudioLevel:0];
+    [_audioLevelMeter reset];
     [self setPreviewHostingContext:WebCore::HostingContext { } gpuProcessIdentifier:0];
 }
 
 @end
 
-#endif // PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM)
+#endif // PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM) && !PLATFORM(APPLETV)

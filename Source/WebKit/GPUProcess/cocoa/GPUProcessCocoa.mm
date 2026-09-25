@@ -32,7 +32,6 @@
 #import "GPUProcessCreationParameters.h"
 #import "Logging.h"
 #import "RemoteRenderingBackend.h"
-#import "TCCSoftLink.h"
 #import <WebCore/AV1UtilitiesCocoa.h>
 #import <WebCore/RealtimeMediaSourceCenter.h>
 #import <WebCore/VP9UtilitiesCocoa.h>
@@ -55,6 +54,7 @@
 #import "WKProcessExtension.h"
 #endif
 
+#import "TCCSoftLink.h"
 #import <pal/cocoa/AVFoundationSoftLink.h>
 
 namespace WebKit {
@@ -278,18 +278,6 @@ bool GPUProcess::setCaptureTCCIdentity(const String& fallbackBundleIdentifier)
 
     WebCore::RealtimeMediaSourceCenter::singleton().setIdentity(WTF::move(identity));
     return true;
-}
-
-bool GPUProcess::setCapturePreviewTCCIdentity()
-{
-    String fallbackBundleIdentifier;
-    for (Ref connection : m_webProcessConnections.values()) {
-        fallbackBundleIdentifier = connection->applicationBundleIdentifier();
-        if (!fallbackBundleIdentifier.isNull())
-            break;
-    }
-
-    return setCaptureTCCIdentity(fallbackBundleIdentifier);
 }
 #endif
 

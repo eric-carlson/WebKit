@@ -28,18 +28,19 @@
 
 #if ENABLE(MEDIA_STREAM)
 
+#include "GPUProcess.h"
+#include "GPUProcessProxyMessages.h"
 #include "LayerHostingContext.h"
 #include "Logging.h"
-#include <WebCore/CAAudioStreamDescription.h>
 #include <WebCore/MediaDeviceHashSalts.h>
 #include <WebCore/RealtimeMediaSourceCenter.h>
 #include <WebCore/VideoFrame.h>
 #include <WebCore/WebAudioBufferList.h>
 #include <cmath>
+#include <wtf/Box.h>
 #include <wtf/TZoneMallocInlines.h>
 
 #if PLATFORM(IOS_FAMILY) && USE(AUDIO_SESSION)
-#include "GPUProcess.h"
 #include "RemoteAudioSessionProxyManager.h"
 #include <WebCore/AVAudioSessionCaptureDeviceManager.h>
 #endif
@@ -67,10 +68,10 @@ RefPtr<WebCore::RealtimeMediaSource> CapturePreviewManager::createSource(const W
     if (!sourceOrError) {
         RELEASE_LOG_ERROR(WebRTC, "CapturePreviewManager unable to create %s preview source for '%s' (%s), denialReason=%d, %s",
             device.type() == WebCore::CaptureDevice::DeviceType::Microphone ? "microphone" : "camera",
-            device.label().utf8().legacyCStringPointer(),
-            device.persistentId().utf8().legacyCStringPointer(),
+            device.label().utf8(),
+            device.persistentId().utf8(),
             static_cast<int>(sourceOrError.error.denialReason),
-            sourceOrError.error.errorMessage.utf8().legacyCStringPointer());
+            sourceOrError.error.errorMessage.utf8());
         return nullptr;
     }
 
@@ -88,9 +89,14 @@ void CapturePreviewManager::start(std::optional<WebCore::CaptureDevice>&& videoD
         stopAudio();
         if (audioDevice)
             startAudio(*audioDevice, pageIdentifier);
+#if PLATFORM(IOS_FAMILY) && USE(AUDIO_SESSION)
+        else
+            restoreAudioSession();
+#endif
     }
 
-    if (videoDeviceID == m_videoDeviceID) {
+    // The layer is built at the preview's size, so a prompt resized by rotation needs a new one.
+    if (videoDeviceID == m_videoDeviceID && previewSize == m_previewSize) {
         callback(m_hostingContext);
         return;
     }
@@ -112,9 +118,8 @@ void CapturePreviewManager::startAudio(const WebCore::CaptureDevice& device, Web
     m_audioDeviceID = device.persistentId();
 
 #if PLATFORM(IOS_FAMILY) && USE(AUDIO_SESSION)
-    // The audio session has to settle before the unit starts. A capture unit reads the category back
-    // from the audio session as it starts and, if it still reads as the old one, suspends itself and
-    // reports no failure at all, so the preview is silent with only a log line to say why.
+    // A capture unit started before the session settles reads the old category, suspends itself and
+    // reports nothing, so the preview is silent.
     prepareAudioSession([protectedThis = Ref { *this }, device, pageIdentifier] {
         if (protectedThis->m_audioDeviceID != device.persistentId())
             return;
@@ -127,23 +132,27 @@ void CapturePreviewManager::startAudio(const WebCore::CaptureDevice& device, Web
 
 void CapturePreviewManager::startAudioSource(const WebCore::CaptureDevice& device, WebCore::PageIdentifier pageIdentifier)
 {
+    // Two audio session completions for the same device can both arrive, as when the selection goes
+    // B, C, B. A source left attached would keep calling audioSamplesAvailable from its own thread.
+    if (RefPtr previousSource = WTF::move(m_audioSource)) {
+        previousSource->removeAudioSampleObserver(*this);
+        previousSource->endImmediatly();
+    }
+
     m_audioSource = createSource(device, pageIdentifier);
     if (!m_audioSource) {
-        RELEASE_LOG_ERROR(WebRTC, "CapturePreviewManager no audio source for '%s'", device.label().utf8().legacyCStringPointer());
+        RELEASE_LOG_ERROR(WebRTC, "CapturePreviewManager no audio source for '%s'", device.label().utf8());
         return;
     }
 
-    m_audioSource->addAudioSampleObserver(*this);
-    m_audioSource->start();
+    protect(m_audioSource)->addAudioSampleObserver(*this);
+    protect(m_audioSource)->start();
 }
 
 #if PLATFORM(IOS_FAMILY) && USE(AUDIO_SESSION)
 
 void CapturePreviewManager::prepareAudioSession(CompletionHandler<void()>&& completionHandler)
 {
-    // Saved once for the life of the preview rather than once per source: each microphone selection
-    // starts a new source, which sets its own preferred input, so saving again here would record the
-    // prompt's own choice and restore that instead of what the application had.
     if (!m_savedPreferredMicrophoneID)
         m_savedPreferredMicrophoneID = WebCore::AVAudioSessionCaptureDeviceManager::singleton().preferredMicrophoneID();
 
@@ -170,8 +179,7 @@ void CapturePreviewManager::startVideo(const WebCore::CaptureDevice& device, Web
         return;
     }
 
-    // Without this the preview ignores device orientation entirely and the image is sideways.
-    m_videoSource->monitorOrientation(m_orientationNotifier);
+    protect(m_videoSource)->monitorOrientation(m_orientationNotifier);
 
     m_displayLayer = WebCore::SampleBufferDisplayLayer::create(*this);
     if (!m_displayLayer) {
@@ -181,51 +189,44 @@ void CapturePreviewManager::startVideo(const WebCore::CaptureDevice& device, Web
         return;
     }
 
-    // The size comes from the UI process, which owns the layout. A source's intrinsicSize() is
-    // still empty at this point, which produced a zero-sized layer and nothing to composite.
+    // The size comes from the prompt: the source's intrinsicSize() is still empty here.
     constexpr bool hideRootLayer = false;
     constexpr bool shouldMaintainAspectRatio = true;
-    m_displayLayer->initialize(hideRootLayer, previewSize, shouldMaintainAspectRatio, [protectedThis = Ref { *this }, callback = WTF::move(callback)](bool didSucceed) mutable {
-        if (!didSucceed || !protectedThis->m_displayLayer) {
-            RELEASE_LOG_ERROR(WebRTC, "CapturePreviewManager display layer failed to initialize");
-            protectedThis->stopVideo();
-            return callback({ });
-        }
-
-        // Default options would leave m_hostable null on iOS, and hostingContext() derives the send
-        // right from it. Matches RemoteSampleBufferDisplayLayer::initialize.
-        LayerHostingContextOptions contextOptions;
-#if PLATFORM(IOS_FAMILY)
-        contextOptions.canShowWhileLocked = false;
-#if USE(EXTENSIONKIT)
-        contextOptions.useHostable = true;
-#endif
-#endif
-        protectedThis->m_layerHostingContext = LayerHostingContext::create(contextOptions);
-        protectedThis->m_layerHostingContext->setRootLayer(protectedThis->m_displayLayer->rootLayer());
-        protectedThis->m_hostingContext = protectedThis->m_layerHostingContext->hostingContext();
-
-#if ENABLE(APP_PRIVACY_REPORT) && !PLATFORM(MACCATALYST)
-        // -[AVCaptureSession init] raises rather than failing when this process has no capture
-        // identity, and an unhandled ObjC exception aborts the process.
-        if (!WebCore::RealtimeMediaSourceCenter::singleton().hasIdentity()) {
-            RELEASE_LOG_ERROR(WebRTC, "CapturePreviewManager refusing to start video capture without an identity");
-            protectedThis->stopVideo();
-            return callback({ });
-        }
-#endif
-
-        // Recorded only once the source is actually running. A device left recorded after a failure
-        // would make re-picking it from the menu a no-op, so a transient failure — the camera held by
-        // another application, say — could never be retried for the life of the prompt.
-        protectedThis->m_videoDeviceID = protectedThis->m_videoSource->persistentID();
-
-        // Frames are only forwarded once there is somewhere to draw them.
-        protectedThis->m_videoSource->addVideoFrameObserver(protectedThis.get());
-        protectedThis->m_videoSource->start();
-
-        callback(protectedThis->m_hostingContext);
+    auto didInitialize = Box<std::optional<bool>>::create();
+    protect(m_displayLayer)->initialize(hideRootLayer, previewSize, shouldMaintainAspectRatio, [didInitialize](bool didSucceed) {
+        *didInitialize = didSucceed;
     });
+    // LocalSampleBufferDisplayLayer answers synchronously; an asynchronous layer is treated as a failure.
+    ASSERT(didInitialize->has_value());
+    if (!didInitialize->value_or(false)) {
+        RELEASE_LOG_ERROR(WebRTC, "CapturePreviewManager display layer failed to initialize");
+        stopVideo();
+        callback({ });
+        return;
+    }
+
+    // Default options would leave m_hostable null with ExtensionKit, and hostingContext() derives the send
+    // right from it. Matches RemoteSampleBufferDisplayLayer::initialize.
+    LayerHostingContextOptions contextOptions;
+#if PLATFORM(IOS_FAMILY) && USE(EXTENSIONKIT)
+    contextOptions.useHostable = true;
+#endif
+    m_layerHostingContext = LayerHostingContext::create(contextOptions);
+    m_layerHostingContext->setRootLayer(protect(m_displayLayer)->rootLayer());
+    m_hostingContext = m_layerHostingContext->hostingContext();
+
+    m_videoDeviceID = protect(m_videoSource)->persistentID();
+    m_previewSize = previewSize;
+    // Without this a camera that relies on the rotation coordinator previews unrotated, unless a
+    // capture from the same camera happens to be monitoring it already.
+    m_videoPageIdentifier = pageIdentifier;
+    if (RefPtr connection = GPUProcess::singleton().parentProcessConnection())
+        connection->send(Messages::GPUProcessProxy::StartMonitoringCaptureDeviceRotation(pageIdentifier, m_videoDeviceID, true), 0);
+    // Added only once m_displayLayer is set, so a frame never arrives with nowhere to draw it.
+    protect(m_videoSource)->addVideoFrameObserver(*this);
+    protect(m_videoSource)->start();
+
+    callback(m_hostingContext);
 }
 
 void CapturePreviewManager::setOrientation(WebCore::IntDegrees orientation)
@@ -240,15 +241,19 @@ void CapturePreviewManager::rotationAngleForCaptureDeviceChanged(const String& p
 
 void CapturePreviewManager::stopVideo()
 {
-    // The observer has to go first: videoFrameAvailable reads m_displayLayer on a capture thread, and
-    // removeVideoFrameObserver takes the same lock that is held across frame delivery, so returning
-    // from it is what guarantees no concurrent read.
+    // The observer goes first: removing it waits out any frame being delivered on a capture thread,
+    // so m_displayLayer is never cleared while videoFrameAvailable reads it.
     if (RefPtr videoSource = WTF::move(m_videoSource)) {
         videoSource->removeVideoFrameObserver(*this);
         videoSource->endImmediatly();
     }
 
+    if (auto pageIdentifier = std::exchange(m_videoPageIdentifier, std::nullopt); pageIdentifier && !m_videoDeviceID.isEmpty()) {
+        if (RefPtr connection = GPUProcess::singleton().parentProcessConnection())
+            connection->send(Messages::GPUProcessProxy::StopMonitoringCaptureDeviceRotation(*pageIdentifier, m_videoDeviceID, true), 0);
+    }
     m_videoDeviceID = { };
+    m_previewSize = { };
     m_layerHostingContext = nullptr;
     m_displayLayer = nullptr;
     m_hostingContext = { };
@@ -268,12 +273,12 @@ void CapturePreviewManager::stopAudio()
 
 void CapturePreviewManager::stop()
 {
+    // A level already queued for the main thread would otherwise reach the page's next prompt.
+    m_audioLevelHandler = nullptr;
     stopVideo();
     stopAudio();
 
 #if PLATFORM(IOS_FAMILY) && USE(AUDIO_SESSION)
-    // After stopAudio() and before the grant is reported, so the page's own capture sets its
-    // preferred input over a restored value rather than the other way round.
     restoreAudioSession();
 #endif
 }
@@ -289,9 +294,8 @@ void CapturePreviewManager::sampleBufferDisplayLayerStatusDidFail()
     RELEASE_LOG_ERROR(WebRTC, "CapturePreviewManager display layer status failed");
 }
 
-// Quietest level shown as non-zero.
-static constexpr float audioLevelFloorInDBFS = -60;
-static constexpr unsigned audioLevelUpdatesPerSecond = 15;
+constexpr float audioLevelFloorInDBFS = -60;
+constexpr unsigned audioLevelUpdatesPerSecond = 15;
 
 static float normalizedLevelFromPeak(float peak)
 {
@@ -331,7 +335,6 @@ void CapturePreviewManager::audioSamplesAvailable(const WTF::MediaTime&, const W
     m_framesSinceLastLevel = 0;
     float level = normalizedLevelFromPeak(std::exchange(m_peakSinceLastLevel, 0));
 
-    // Called on a capture thread, so the handler is invoked where the UI process can be reached.
     callOnMainRunLoop([protectedThis = Ref { *this }, level] {
         if (protectedThis->m_audioLevelHandler)
             protectedThis->m_audioLevelHandler(level);

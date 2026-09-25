@@ -154,10 +154,6 @@ public:
     void ensureAVCaptureServerConnection();
 #if ENABLE(APP_PRIVACY_REPORT) && !PLATFORM(MACCATALYST)
     static bool setCaptureTCCIdentity(const String& fallbackBundleIdentifier);
-
-    // A capture preview has no web process connection to derive an identity from, so it is
-    // attributed to the application itself.
-    bool setCapturePreviewTCCIdentity();
 #endif
 #endif
 
@@ -232,6 +228,11 @@ public:
     void releaseTransferredImageBuffers(Vector<WebCore::ImageBufferTransferIdentifier>&&);
 
 private:
+#if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
+    bool setUpCapturePreviewEnvironment(WebCore::PageIdentifier, const WebCore::SecurityOriginData&, bool hasCamera);
+    void stopCapturePreviewManager();
+#endif
+
     GPUProcess();
 
     void lowMemoryHandler(Critical, Synchronous);
@@ -275,8 +276,8 @@ private:
     void updateCaptureAccess(bool allowAudioCapture, bool allowVideoCapture, bool allowDisplayCapture, bool willUseEchoCancellation, WebCore::ProcessIdentifier, CompletionHandler<void()>&&);
     void updateCaptureOrigin(const WebCore::SecurityOriginData&, WebCore::ProcessIdentifier);
 #if PLATFORM(COCOA)
-    void startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, CompletionHandler<void(WebCore::HostingContext)>&&);
-    void stopCapturePreview(WebCore::PageIdentifier);
+    void startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, Vector<SandboxExtension::Handle>&&, String&& applicationBundleIdentifier, WebCore::SecurityOriginData&&, CompletionHandler<void(WebCore::HostingContext)>&&);
+    void stopCapturePreview(WebCore::PageIdentifier, CompletionHandler<void()>&&);
 #endif
     void addMockMediaDevice(const WebCore::MockMediaDevice&);
     void clearMockMediaDevices();
@@ -348,6 +349,9 @@ private:
 #if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
     RefPtr<CapturePreviewManager> m_capturePreviewManager;
     Markable<WebCore::PageIdentifier> m_capturePreviewPage;
+    // Revocable, unlike those updateSandboxAccess consumes for a granted capture, because the user has not
+    // decided yet. Revoking blocks further lookups; a capture server connection already made stays open.
+    Vector<Ref<SandboxExtension>> m_capturePreviewSandboxExtensions;
     const RefPtr<WorkQueue> m_videoMediaStreamTrackRendererQueue;
 #endif
     WebCore::IntDegrees m_orientation { 0 };

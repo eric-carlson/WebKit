@@ -25,7 +25,7 @@
 
 #pragma once
 
-#if PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM)
+#if PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM) && !PLATFORM(APPLETV)
 
 #include "MediaPermissionPromptCustomization.h"
 #include <WebCore/CaptureDevice.h>
@@ -36,29 +36,25 @@
 #include <wtf/Vector.h>
 #include <wtf/text/WTFString.h>
 
-// Presents the getUserMedia permission prompt with a live capture preview. UIAlertController takes
-// no custom content, so unlike macOS this replaces the alert rather than adding an accessory view.
-@interface WKCapturePreviewViewController : UIViewController <UIViewControllerTransitioningDelegate>
+@interface WKCapturePreviewViewController : UIViewController
 
-- (instancetype)initWithTitle:(NSString *)alertTitle allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;
+- (instancetype)initWithAvailableSize:(CGSize)availableSize title:(NSString *)alertTitle informativeText:(NSString *)informativeText allowButtonTitle:(NSString *)allowButtonTitle denyButtonTitle:(NSString *)denyButtonTitle additionalActions:(Vector<WebKit::MediaPermissionPromptAdditionalAction>&&)additionalActions videoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;
 
-// The GPU process builds its layer at this size, so it has to match the container exactly or the
-// hosted layer will not fill it.
-+ (CGSize)previewSize;
+- (CGSize)previewSize;
 
 @property (nonatomic, readonly, copy) NSString *selectedVideoDeviceID;
 @property (nonatomic, readonly, copy) NSString *selectedAudioDeviceID;
 
 - (void)setSelectionChangedHandler:(Function<void(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice)>&&)handler;
-- (void)setDecisionHandler:(CompletionHandler<void(bool granted, std::optional<size_t> chosenAdditionalActionIndex)>&&)handler;
+- (void)setDecisionHandler:(CompletionHandler<void(WebKit::MediaPermissionPromptResult&&)>&&)handler;
 - (void)setPreviewHostingContext:(const WebCore::HostingContext&)hostingContext gpuProcessIdentifier:(ProcessID)gpuProcessIdentifier;
 - (void)setAudioLevel:(float)level;
 - (void)updateWithVideoDevices:(Vector<WebCore::CaptureDevice>&&)videoDevices audioDevices:(Vector<WebCore::CaptureDevice>&&)audioDevices;
-// Denies the request and dismisses, as if the deny button had been activated. Used when the request
-// is torn down underneath the prompt.
-- (void)deny;
+- (void)dismissWithoutAnswer;
 - (void)stop;
+- (BOOL)isStopped;
+- (void)dismissWhenPossible;
 
 @end
 
-#endif // PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM)
+#endif // PLATFORM(IOS_FAMILY) && ENABLE(MEDIA_STREAM) && !PLATFORM(APPLETV)

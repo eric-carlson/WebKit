@@ -63,8 +63,10 @@ public:
     void updatePreferredBufferSizeForProcess();
     void updateSpatialExperience();
 
+#if PLATFORM(IOS_FAMILY)
     void beginCapturePreview(CompletionHandler<void()>&&);
     void endCapturePreview();
+#endif
 
     Ref<WebCore::AudioSession::SetActivePromise> tryToSetActiveForProcess(RemoteAudioSessionProxy&, bool);
 
@@ -90,12 +92,27 @@ private:
     void configurationDidChange(const WebCore::AudioSession&);
 
     bool hasOtherActiveProxyThan(RemoteAudioSessionProxy& proxyToExclude);
-    bool hasActiveProxy();
     bool hasActiveNotInterruptedProxy();
+#if PLATFORM(IOS_FAMILY)
+    bool hasActiveProxy();
+#endif
+
+    bool isCapturePreviewActive() const
+    {
+#if PLATFORM(IOS_FAMILY)
+        return m_capturePreviewActive;
+#else
+        return false;
+#endif
+    }
 
     WeakRef<GPUProcess> m_gpuProcess;
     WeakHashSet<RemoteAudioSessionProxy> m_proxies;
+#if PLATFORM(IOS_FAMILY)
     bool m_capturePreviewActive { false };
+    Vector<CompletionHandler<void()>> m_capturePreviewActivationHandlers;
+    unsigned m_capturePreviewActivationCount { 0 };
+#endif
 };
 
 }

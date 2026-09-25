@@ -75,6 +75,11 @@
 
 #if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
 #include "CapturePreviewManager.h"
+#include <WebCore/RealtimeMediaSourceCenter.h>
+#include <wtf/cocoa/Entitlements.h>
+#if PLATFORM(IOS_FAMILY)
+#include <WebCore/MediaSessionHelperIOS.h>
+#endif
 #endif
 
 #if PLATFORM(COCOA)
@@ -175,12 +180,21 @@ void GPUProcess::connectionToWebProcessClosed(IPC::Connection& connection)
 
 bool GPUProcess::shouldTerminate()
 {
+#if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
+    // A permission prompt's preview may have no web process connection behind it.
+    if (m_capturePreviewManager)
+        return false;
+#endif
     return m_webProcessConnections.isEmpty();
 }
 
 bool GPUProcess::canExitUnderMemoryPressure() const
 {
     ASSERT(isMainRunLoop());
+#if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
+    if (m_capturePreviewManager)
+        return false;
+#endif
     for (auto& webProcessConnection : m_webProcessConnections.values()) {
         if (!webProcessConnection->allowsExitUnderMemoryPressure())
             return false;
@@ -843,10 +857,8 @@ void GPUProcess::setOrientationForMediaCapture(WebCore::IntDegrees orientation)
     m_orientation = orientation;
 
 #if PLATFORM(COCOA)
-    // A preview is driven by the UI process and so belongs to no web process connection
-    // and needs to be updated separately.
     if (m_capturePreviewManager)
-        m_capturePreviewManager->setOrientation(orientation);
+        protect(m_capturePreviewManager)->setOrientation(orientation);
 #endif
 
     for (auto& connection : m_webProcessConnections.values())
@@ -867,63 +879,162 @@ void GPUProcess::rotationAngleForCaptureDeviceChanged(const String& persistentId
 {
 #if PLATFORM(COCOA)
     if (m_capturePreviewManager)
-        m_capturePreviewManager->rotationAngleForCaptureDeviceChanged(persistentId, rotation);
+        protect(m_capturePreviewManager)->rotationAngleForCaptureDeviceChanged(persistentId, rotation);
 #endif
     for (auto& connection : m_webProcessConnections.values())
         connection->rotationAngleForCaptureDeviceChanged(persistentId, rotation);
 }
 
 #if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
-void GPUProcess::startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier pageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, CompletionHandler<void(WebCore::HostingContext)>&& completionHandler)
+void GPUProcess::startCapturePreview(std::optional<WebCore::CaptureDevice>&& videoDevice, std::optional<WebCore::CaptureDevice>&& audioDevice, WebCore::PageIdentifier pageIdentifier, WebCore::IntSize previewSize, WebCore::IntDegrees orientation, Vector<SandboxExtension::Handle>&& sandboxExtensions, String&& applicationBundleIdentifier, WebCore::SecurityOriginData&& origin, CompletionHandler<void(WebCore::HostingContext)>&& completionHandler)
 {
+    // FIXME: The manager is per process while requests are per page, so a second page's prompt is refused
+    // rather than taking the first page's layer.
+    if (m_capturePreviewPage && *m_capturePreviewPage != pageIdentifier) {
+        RELEASE_LOG_ERROR(WebRTC, "GPUProcess::startCapturePreview: a preview is already running for another page");
+        return completionHandler({ });
+    }
+
+    // Owned from here, even if starting fails, so only this page's stop revokes the extensions below.
+    m_capturePreviewPage = pageIdentifier;
+
+    // Before the capture server connection, which needs the access these grant.
+    for (auto& handle : sandboxExtensions) {
+        if (RefPtr extension = SandboxExtension::create(WTF::move(handle)); extension && extension->consume())
+            m_capturePreviewSandboxExtensions.append(extension.releaseNonNull());
+    }
+
     ensureAVCaptureServerConnection();
 
 #if ENABLE(APP_PRIVACY_REPORT) && !PLATFORM(MACCATALYST)
-    // A preview is attributed to the application, not to the page: the page has not been granted
-    // access at this point, so its origin must not appear as the source of the capture.
-    bool hasCaptureIdentity = WebCore::RealtimeMediaSourceCenter::singleton().hasIdentity() || setCapturePreviewTCCIdentity();
+    // As a capture does, every time. The UI process's audit token names the application; the bundle
+    // identifier is only the fallback.
+    bool hasCaptureIdentity = setCaptureTCCIdentity(applicationBundleIdentifier) || WebCore::RealtimeMediaSourceCenter::singleton().hasIdentity();
 
     // Fail immediately if we don't have a capture identity as -[AVCaptureSession init] will throw.
     if (!hasCaptureIdentity && videoDevice) {
         RELEASE_LOG_ERROR(WebRTC, "GPUProcess::startCapturePreview: no capture identity, refusing to preview");
+        stopCapturePreviewManager();
         return completionHandler({ });
     }
+#else
+    UNUSED_PARAM(applicationBundleIdentifier);
 #endif
 
-    // FIXME: The manager is per process while requests are per page, so a prompt request from a second page
-    // would steal the first page's layer out from under it. Deny the request and log an error for now while
-    // we figure out the right way to handle this.
-    if (m_capturePreviewManager && m_capturePreviewPage && *m_capturePreviewPage != pageIdentifier) {
-        RELEASE_LOG_ERROR(WebRTC, "GPUProcess::startCapturePreview: a preview is already running for another page");
+    // A failed restart must not leave the previous devices running behind a prompt with no preview.
+    if (!setUpCapturePreviewEnvironment(pageIdentifier, origin, !!videoDevice)) {
+        stopCapturePreviewManager();
         return completionHandler({ });
     }
-    m_capturePreviewPage = pageIdentifier;
 
     if (!m_capturePreviewManager) {
         m_capturePreviewManager = CapturePreviewManager::create();
-        m_capturePreviewManager->setAudioLevelHandler([](float level) {
+        // A manager serves one page: stopping clears it, and another page is refused while it exists.
+        protect(m_capturePreviewManager)->setAudioLevelHandler([pageIdentifier](float level) {
             if (RefPtr connection = GPUProcess::singleton().parentProcessConnection())
-                connection->send(Messages::GPUProcessProxy::CapturePreviewAudioLevelChanged(level), 0);
+                connection->send(Messages::GPUProcessProxy::CapturePreviewAudioLevelChanged(pageIdentifier, level), 0);
         });
     }
 
-    // The preview has its own notifier rather than sharing m_orientation, which belongs to the web
-    // process connections.
-    m_capturePreviewManager->setOrientation(orientation);
-
-    m_capturePreviewManager->start(WTF::move(videoDevice), WTF::move(audioDevice), pageIdentifier, previewSize, WTF::move(completionHandler));
+    protect(m_capturePreviewManager)->setOrientation(orientation);
+    protect(m_capturePreviewManager)->start(WTF::move(videoDevice), WTF::move(audioDevice), pageIdentifier, previewSize, WTF::move(completionHandler));
 }
 
-void GPUProcess::stopCapturePreview(WebCore::PageIdentifier pageIdentifier)
+// What a capture gets from its own connection, which a preview has to find by page.
+bool GPUProcess::setUpCapturePreviewEnvironment(WebCore::PageIdentifier pageIdentifier, const WebCore::SecurityOriginData& origin, bool hasCamera)
+{
+    if (!GPUConnectionToWebProcess::setCaptureAttributionString(origin)) {
+        RELEASE_LOG_ERROR(WebRTC, "GPUProcess::startCapturePreview: unable to set capture attribution, refusing to preview");
+        return false;
+    }
+
+#if PLATFORM(IOS_FAMILY) || ENABLE(EXTENSION_CAPABILITIES)
+    auto isConnectionForPage = [&](GPUConnectionToWebProcess& connection) {
+#if HAVE(AUDIT_TOKEN)
+        if (connection.presentingApplicationAuditTokens().contains(pageIdentifier))
+            return true;
+#endif
+#if ENABLE(EXTENSION_CAPABILITIES)
+        if (!connection.mediaPlaybackEnvironment(pageIdentifier).isEmpty())
+            return true;
+#endif
+        UNUSED_PARAM(connection);
+        return false;
+    };
+    RefPtr<GPUConnectionToWebProcess> pageConnection;
+    for (Ref connection : m_webProcessConnections.values()) {
+        if (isConnectionForPage(connection)) {
+            pageConnection = connection.ptr();
+            break;
+        }
+    }
+#endif
+
+#if ENABLE(EXTENSION_CAPABILITIES) && !PLATFORM(IOS_FAMILY_SIMULATOR)
+    String mediaEnvironment = pageConnection ? pageConnection->mediaPlaybackEnvironment(pageIdentifier) : String { };
+    bool hasMediaEnvironment = !mediaEnvironment.isEmpty();
+    WebCore::RealtimeMediaSourceCenter::singleton().setCurrentMediaEnvironment(WTF::move(mediaEnvironment));
+    if (!hasMediaEnvironment && !WebCore::RealtimeMediaSourceCenter::singleton().hasIdentity() && hasCamera
+        && WTF::processHasEntitlement("com.apple.developer.web-browser-engine.rendering"_s)) {
+        RELEASE_LOG_ERROR(WebRTC, "GPUProcess::startCapturePreview: no media environment, refusing to preview");
+        return false;
+    }
+#else
+    UNUSED_PARAM(hasCamera);
+#endif
+
+#if PLATFORM(IOS_FAMILY)
+#if HAVE(AUDIT_TOKEN)
+    bool hasPresentingApplication = pageConnection && pageConnection->presentingApplicationAuditTokens().contains(pageIdentifier);
+#else
+    bool hasPresentingApplication = false;
+#endif
+    if (hasPresentingApplication)
+        pageConnection->providePresentingApplicationPID(pageIdentifier);
+    else {
+#if ENABLE(EXTENSION_CAPABILITIES)
+        bool usesMediaCapabilityGrants = pageConnection && pageConnection->sharedPreferencesForWebProcessValue().mediaCapabilityGrantsEnabled;
+#else
+        bool usesMediaCapabilityGrants = false;
+#endif
+        // No presenting application recorded for the page, so the UI process presents, as it would for
+        // the page's own audio session.
+        if (!usesMediaCapabilityGrants) {
+            if (RefPtr connection = parentProcessConnection())
+                protect(MediaSessionHelper::sharedHelper())->providePresentingApplicationPID(connection->remoteProcessID());
+        }
+    }
+#endif
+
+    return true;
+}
+
+void GPUProcess::stopCapturePreview(WebCore::PageIdentifier pageIdentifier, CompletionHandler<void()>&& completionHandler)
 {
     // Dismissing a prompt that was declined a preview must not stop the preview another page owns.
     if (m_capturePreviewPage && *m_capturePreviewPage != pageIdentifier)
-        return;
+        return completionHandler();
 
     m_capturePreviewPage = { };
+    stopCapturePreviewManager();
 
-    // stop() explicitly rather than relying on the destructor: an in-flight start holds a Ref on the
-    // manager through its layer-initialize callback, so dropping this one need not destroy it.
+    // The preview set process-wide capture state for its own page.
+    for (Ref connection : m_webProcessConnections.values())
+        connection->reapplyCaptureEnvironment();
+
+    // A grant that follows gets its own, permanent, access through updateSandboxAccess.
+    for (auto& extension : std::exchange(m_capturePreviewSandboxExtensions, { }))
+        extension->revoke();
+
+    // Replied after stop() has ended the sources, and on iOS restored the preferred microphone.
+    // Deactivating the audio session is not waited for.
+    completionHandler();
+}
+
+void GPUProcess::stopCapturePreviewManager()
+{
+    // stop() explicitly rather than relying on the destructor: on iOS an audio start still waiting for the
+    // audio session holds a Ref on the manager, so dropping this one need not destroy it.
     if (RefPtr capturePreviewManager = WTF::move(m_capturePreviewManager))
         capturePreviewManager->stop();
 }

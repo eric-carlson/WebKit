@@ -75,8 +75,6 @@ public:
         Vector<CaptureDevice> audioDevices;
         Vector<CaptureDevice> videoDevices;
 
-        // Devices are ordered by how well they match the request, so those matching it as well as
-        // any other are at the start of each list.
         unsigned bestMatchingAudioDeviceCount { 0 };
         unsigned bestMatchingVideoDeviceCount { 0 };
     };

@@ -31,23 +31,23 @@
 #import "Logging.h"
 #import "MediaPermissionUtilities.h"
 #import <WebCore/LocalizedStrings.h>
-#import <WebCore/RealtimeMediaSourceCenter.h>
 #import <WebCore/RegistrableDomain.h>
 #import <WebCore/SecurityOrigin.h>
-#import <pal/spi/cocoa/LaunchServicesSPI.h>
-#import <wtf/OSObjectPtr.h>
 
 #if HAVE(SYSTEM_STATUS)
 #import "SystemStatusSPI.h"
 #import <pal/ios/SystemStatusSoftLink.h>
 #endif
 
-#import "TCCSoftLink.h"
-
 namespace WebKit {
 
 #if ENABLE(MEDIA_STREAM)
 bool GPUConnectionToWebProcess::setCaptureAttributionString()
+{
+    return setCaptureAttributionString(m_captureOrigin->data());
+}
+
+bool GPUConnectionToWebProcess::setCaptureAttributionString(const WebCore::SecurityOriginData& captureOrigin)
 {
 #if HAVE(SYSTEM_STATUS)
     if (![PAL::getSTDynamicActivityAttributionPublisherClassSingleton() respondsToSelector:@selector(setCurrentAttributionStringWithFormat:auditToken:)]
@@ -55,13 +55,13 @@ bool GPUConnectionToWebProcess::setCaptureAttributionString()
         return true;
     }
 
-    auto auditToken = gpuProcess().parentProcessConnection()->getAuditToken();
+    auto auditToken = GPUProcess::singleton().parentProcessConnection()->getAuditToken();
     if (!auditToken)
         return false;
 
-    RetainPtr visibleName = applicationVisibleNameFromOrigin(m_captureOrigin->data());
+    RetainPtr visibleName = applicationVisibleNameFromOrigin(captureOrigin);
     if (!visibleName)
-        visibleName = gpuProcess().applicationVisibleName().createNSString();
+        visibleName = GPUProcess::singleton().applicationVisibleName().createNSString();
 
     if ([PAL::getSTDynamicActivityAttributionPublisherClassSingleton() respondsToSelector:@selector(setCurrentAttributionWebsiteString:auditToken:)])
         [PAL::getSTDynamicActivityAttributionPublisherClassSingleton() setCurrentAttributionWebsiteString:visibleName.get() auditToken:auditToken.value()];
@@ -69,6 +69,8 @@ bool GPUConnectionToWebProcess::setCaptureAttributionString()
         SUPPRESS_UNRETAINED_ARG RetainPtr formatString = adoptNS([[NSString alloc] initWithFormat:WEB_UI_NSSTRING(@"%@ in %%@", "The domain and application using the camera and/or microphone. The first argument is domain, the second is the application name (iOS only)."), visibleName.get()]);
         [PAL::getSTDynamicActivityAttributionPublisherClassSingleton() setCurrentAttributionStringWithFormat:formatString.get() auditToken:auditToken.value()];
     }
+#else
+    UNUSED_PARAM(captureOrigin);
 #endif
 
     return true;

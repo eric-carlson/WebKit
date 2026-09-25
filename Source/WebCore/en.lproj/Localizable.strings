@@ -295,6 +295,9 @@
 /* Display name for closed captions text tracks. */
 "CC (text track)" = "CC";
 
+/* Accessibility label for the camera menu in the user media prompt */
+"Camera (usermedia accessibility label)" = "Camera";
+
 /* Cancel */
 "Cancel" = "Cancel";
 
@@ -1056,6 +1059,12 @@
 
 /* Display name for text track kind 'metadata'. */
 "Metadata (text track)" = "Metadata";
+
+/* Accessibility label for the microphone menu in the user media prompt */
+"Microphone (usermedia accessibility label)" = "Microphone";
+
+/* Accessibility label for the microphone level meter in the user media prompt */
+"Microphone level (usermedia accessibility label)" = "Microphone level";
 
 /* Label text to be used when a plugin is missing */
 "Missing Plug-in" = "Missing Plug-in";

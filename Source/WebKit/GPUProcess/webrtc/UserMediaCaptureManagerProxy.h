@@ -101,6 +101,7 @@ public:
     void didReceiveSyncMessage(IPC::Connection&, IPC::Decoder&, UniqueRef<IPC::Encoder>&);
 
     bool LEGACY_NODELETE hasSourceProxies() const;
+    void reapplyCaptureEnvironment();
 
     std::optional<SharedPreferencesForWebProcess> sharedPreferencesForWebProcess() const;
 
@@ -113,6 +114,7 @@ private:
     using CreateSourceCallback = CompletionHandler<void(const WebCore::CaptureSourceError&, const WebCore::RealtimeMediaSourceSettings&, const WebCore::RealtimeMediaSourceCapabilities&)>;
     void createMediaSourceForCaptureDeviceWithConstraints(WebCore::RealtimeMediaSourceIdentifier, const WebCore::CaptureDevice& deviceID, WebCore::MediaDeviceHashSalts&&, WebCore::MediaConstraints&&, bool shouldUseGPUProcessRemoteFrames, WebCore::PageIdentifier, CreateSourceCallback&&);
     void startProducingData(WebCore::RealtimeMediaSourceIdentifier, WebCore::PageIdentifier);
+    bool applyCaptureEnvironment(WebCore::RealtimeMediaSource&, WebCore::PageIdentifier);
     void stopProducingData(WebCore::RealtimeMediaSourceIdentifier);
     void removeSource(WebCore::RealtimeMediaSourceIdentifier);
     void capabilities(WebCore::RealtimeMediaSourceIdentifier, CompletionHandler<void(WebCore::RealtimeMediaSourceCapabilities&&)>&&);

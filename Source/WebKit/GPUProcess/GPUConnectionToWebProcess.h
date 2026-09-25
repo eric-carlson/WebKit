@@ -204,12 +204,14 @@ public:
 
 #if ENABLE(MEDIA_STREAM)
     void setOrientationForMediaCapture(WebCore::IntDegrees);
+    void reapplyCaptureEnvironment();
     void rotationAngleForCaptureDeviceChanged(const String&, WebCore::VideoFrameRotation);
     void startMonitoringCaptureDeviceRotation(WebCore::PageIdentifier, const String&);
     void stopMonitoringCaptureDeviceRotation(WebCore::PageIdentifier, const String&);
     void updateCaptureAccess(bool allowAudioCapture, bool allowVideoCapture, bool allowDisplayCapture, bool willUseEchoCancellation);
     void updateCaptureOrigin(const WebCore::SecurityOriginData&);
     bool LEGACY_NODELETE setCaptureAttributionString();
+    static bool setCaptureAttributionString(const WebCore::SecurityOriginData&);
     bool allowsAudioCapture() const { return m_allowsAudioCapture; }
     bool allowsVideoCapture() const { return m_allowsVideoCapture; }
     bool allowsDisplayCapture() const { return m_allowsDisplayCapture; }

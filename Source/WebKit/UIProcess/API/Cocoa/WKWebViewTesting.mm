@@ -31,6 +31,7 @@
 #import "EndowmentStateTracker.h"
 #import "GPUProcessProxy.h"
 #import "LogStream.h"
+#import "MediaPermissionPromptCustomization.h"
 #import "MediaSessionCoordinatorProxyPrivate.h"
 #import "NetworkProcessProxy.h"
 #import "PendingSnapshotDrawing.h"
@@ -68,6 +69,7 @@
 #import <wtf/RetainPtr.h>
 #import <wtf/RuntimeApplicationChecks.h>
 #import <wtf/TZoneMallocInlines.h>
+#import <wtf/cocoa/VectorCocoa.h>
 #if USE(APPLE_INTERNAL_SDK)
 #import <wtf/cocoa/Entitlements.h>
 #import <wtf/spi/darwin/XPCSPI.h>
@@ -111,6 +113,167 @@
 - (void)coordinatorStateChanged:(_WKMediaSessionCoordinatorState)state;
 @end
 #endif
+
+@implementation _WKMediaCapturePermissionPromptForTesting {
+#if ENABLE(MEDIA_STREAM)
+    RefPtr<WebKit::MediaPermissionPromptForTesting> _prompt;
+#endif
+}
+
+#if ENABLE(MEDIA_STREAM)
+- (instancetype)_initWithPrompt:(Ref<WebKit::MediaPermissionPromptForTesting>&&)prompt
+{
+    if (!(self = [super init]))
+        return nil;
+
+    _prompt = WTF::move(prompt);
+    return self;
+}
+
+static RetainPtr<NSArray<NSDictionary<NSString *, NSString *> *>> devicesForTesting(const Vector<WebKit::MediaPermissionPromptForTesting::Device>& devices)
+{
+    return createNSArray(devices, [](auto& device) {
+        return @{ @"id": device.persistentID.createNSString().get(), @"label": device.label.createNSString().get() };
+    });
+}
+#endif
+
+- (NSString *)title
+{
+#if ENABLE(MEDIA_STREAM)
+    return _prompt->title().createNSString().autorelease();
+#else
+    return @"";
+#endif
+}
+
+- (NSString *)informativeText
+{
+#if ENABLE(MEDIA_STREAM)
+    return nsStringNilIfNull(_prompt->informativeText()).autorelease();
+#else
+    return nil;
+#endif
+}
+
+- (NSArray<NSString *> *)buttonTitles
+{
+#if ENABLE(MEDIA_STREAM)
+    return createNSArray(_prompt->buttonTitles()).autorelease();
+#else
+    return @[ ];
+#endif
+}
+
+- (BOOL)showsPreview
+{
+#if ENABLE(MEDIA_STREAM)
+    return _prompt->showsPreview();
+#else
+    return NO;
+#endif
+}
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)cameras
+{
+#if ENABLE(MEDIA_STREAM)
+    return devicesForTesting(_prompt->cameras()).autorelease();
+#else
+    return @[ ];
+#endif
+}
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)microphones
+{
+#if ENABLE(MEDIA_STREAM)
+    return devicesForTesting(_prompt->microphones()).autorelease();
+#else
+    return @[ ];
+#endif
+}
+
+- (NSString *)selectedCameraID
+{
+#if ENABLE(MEDIA_STREAM)
+    return nsStringNilIfEmpty(_prompt->selectedCameraID()).autorelease();
+#else
+    return nil;
+#endif
+}
+
+- (NSString *)selectedMicrophoneID
+{
+#if ENABLE(MEDIA_STREAM)
+    return nsStringNilIfEmpty(_prompt->selectedMicrophoneID()).autorelease();
+#else
+    return nil;
+#endif
+}
+
+- (NSUInteger)audioLevelUpdateCount
+{
+#if ENABLE(MEDIA_STREAM)
+    return _prompt->audioLevelUpdateCount();
+#else
+    return 0;
+#endif
+}
+
+- (NSUInteger)previewLayerCount
+{
+#if ENABLE(MEDIA_STREAM)
+    return _prompt->previewLayerCount();
+#else
+    return 0;
+#endif
+}
+
+- (BOOL)hasPreviewLayer
+{
+#if ENABLE(MEDIA_STREAM)
+    return _prompt->hasPreviewLayer();
+#else
+    return NO;
+#endif
+}
+
+- (void)selectCameraAtIndex:(NSUInteger)index
+{
+#if ENABLE(MEDIA_STREAM)
+    _prompt->selectCamera(index);
+#else
+    UNUSED_PARAM(index);
+#endif
+}
+
+- (void)selectMicrophoneAtIndex:(NSUInteger)index
+{
+#if ENABLE(MEDIA_STREAM)
+    _prompt->selectMicrophone(index);
+#else
+    UNUSED_PARAM(index);
+#endif
+}
+
+- (void)respondWithButtonIndex:(NSUInteger)index cameraID:(NSString *)cameraID microphoneID:(NSString *)microphoneID
+{
+#if ENABLE(MEDIA_STREAM)
+    _prompt->respond({ .buttonIndex = index, .cameraPersistentID = cameraID, .microphonePersistentID = microphoneID });
+#else
+    UNUSED_PARAM(index);
+    UNUSED_PARAM(cameraID);
+    UNUSED_PARAM(microphoneID);
+#endif
+}
+
+- (void)dismissWithoutAnswer
+{
+#if ENABLE(MEDIA_STREAM)
+    _prompt->respond({ });
+#endif
+}
+
+@end
 
 @implementation WKWebView (WKTesting)
 
@@ -562,6 +725,26 @@ static void dumpCALayer(TextStream& ts, CALayer *layer, bool traverse)
 
     if (RefPtr pageForTesting = _page->pageForTesting())
         pageForTesting->setIndexOfGetDisplayMediaDeviceSelectedForTesting(index);
+#endif
+}
+
+- (void)_setMediaCapturePermissionPromptHandlerForTesting:(void (^)(_WKMediaCapturePermissionPromptForTesting *))handler runsPreview:(BOOL)runsPreview
+{
+#if ENABLE(MEDIA_STREAM)
+    if (!_page)
+        return;
+
+    if (!handler) {
+        _page->setMediaPermissionPromptHandlerForTesting(nullptr, false);
+        return;
+    }
+
+    _page->setMediaPermissionPromptHandlerForTesting([handler = makeBlockPtr(handler)](Ref<WebKit::MediaPermissionPromptForTesting>&& prompt) {
+        handler(adoptNS([[_WKMediaCapturePermissionPromptForTesting alloc] _initWithPrompt:WTF::move(prompt)]).get());
+    }, runsPreview);
+#else
+    UNUSED_PARAM(handler);
+    UNUSED_PARAM(runsPreview);
 #endif
 }
 

@@ -23,27 +23,27 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import "_WKMediaCapturePermissionPromptConfiguration.h"
-
-#if ENABLE(MEDIA_STREAM)
-
 #import "MediaPermissionPromptCustomization.h"
+#import "_WKMediaCapturePermissionPromptConfiguration.h"
 #import <wtf/Vector.h>
 #import <wtf/text/WTFString.h>
+
+// The classes exist on every platform, so a platform without media capture can still answer the SPI
+// with a denial.
+@interface _WKMediaCapturePermissionPromptResult (Internal)
+- (instancetype)_initWithOutcome:(_WKMediaCapturePermissionPromptOutcome)outcome chosenAction:(_WKMediaCapturePermissionAction *)chosenAction cameraDeviceID:(NSString *)cameraDeviceID microphoneDeviceID:(NSString *)microphoneDeviceID;
+@end
+
+#if ENABLE(MEDIA_STREAM)
 
 namespace WebKit {
 
 // Actions past the cap are dropped rather than the call failing, so a prompt is still shown.
 MediaPermissionPromptCustomization customizationFromConfiguration(_WKMediaCapturePermissionPromptConfiguration *);
 
-// The index the prompt reported, mapped back to the object the application supplied. nil for the
-// built-in allow and deny buttons.
+// nil for the built-in allow and deny buttons.
 _WKMediaCapturePermissionAction *actionAtIndex(NSArray<_WKMediaCapturePermissionAction *> *, std::optional<size_t>);
 
 }
-
-@interface _WKMediaCapturePermissionPromptResult (Internal)
-- (instancetype)_initWithOutcome:(_WKMediaCapturePermissionPromptOutcome)outcome chosenAction:(_WKMediaCapturePermissionAction *)chosenAction cameraDeviceID:(NSString *)cameraDeviceID microphoneDeviceID:(NSString *)microphoneDeviceID;
-@end
 
 #endif // ENABLE(MEDIA_STREAM)

@@ -23,12 +23,14 @@
 #include "APIUIClient.h"
 #include "MediaPermissionUtilities.h"
 #include "UserMediaPermissionRequestManagerProxy.h"
+#include "UserMediaProcessManager.h"
 #include "WebPageProxy.h"
 #include "WebPreferences.h"
 #include <WebCore/CaptureDeviceManager.h>
 #include <WebCore/RealtimeMediaSourceCenter.h>
 #include <WebCore/SecurityOrigin.h>
 #include <WebCore/SecurityOriginData.h>
+#include <algorithm>
 #include <wtf/text/StringHash.h>
 
 namespace WebKit {
@@ -76,28 +78,19 @@ bool UserMediaPermissionRequestProxy::willUseEchoCancellation() const
 }
 
 #if ENABLE(MEDIA_STREAM)
-static inline size_t indexOfDevice(const Vector<CaptureDevice>& devices, const String& deviceID)
+template<typename Predicate>
+static void moveDeviceToFront(std::span<CaptureDevice> devices, NOESCAPE const Predicate& matches)
 {
-    return devices.findIf([&deviceID](const auto& device) {
-        return device.persistentId() == deviceID;
-    });
+    auto iterator = std::ranges::find_if(devices, matches);
+    if (iterator != devices.end())
+        std::rotate(devices.begin(), iterator, iterator + 1);
 }
 
-static inline bool moveDeviceToFront(Vector<CaptureDevice>& devices, const String& deviceID)
+static auto hasPersistentID(const String& deviceID)
 {
-    size_t index = indexOfDevice(devices, deviceID);
-    if (index == notFound)
-        return false;
-
-    if (index) {
-        auto device = devices[index];
-        ASSERT(device.enabled());
-
-        devices.removeAt(index);
-        devices.insert(0, WTF::move(device));
-    }
-
-    return true;
+    return [&deviceID](const CaptureDevice& device) {
+        return !deviceID.isEmpty() && device.persistentId() == deviceID;
+    };
 }
 #endif
 
@@ -106,18 +99,13 @@ void UserMediaPermissionRequestProxy::applyDeviceSelection(const String& audioDe
 #if ENABLE(MEDIA_STREAM)
     // Remembered because the grant path revalidates constraints, which rebuilds the eligible lists
     // in fitness order and would otherwise discard this choice.
-    m_selectedAudioDeviceUID = audioDeviceUID;
-    m_selectedVideoDeviceUID = videoDeviceUID;
+    m_selectedDeviceUIDs = { audioDeviceUID, videoDeviceUID };
     m_deviceSelectionWasExplicit = true;
 
-    if (!audioDeviceUID.isEmpty()) {
-        bool foundAudioDevice = moveDeviceToFront(m_eligibleAudioDevices, audioDeviceUID);
-        ASSERT_UNUSED(foundAudioDevice, foundAudioDevice);
-    }
-    if (!videoDeviceUID.isEmpty()) {
-        bool foundVideoDevice = moveDeviceToFront(m_eligibleVideoDevices, videoDeviceUID);
-        ASSERT_UNUSED(foundVideoDevice, foundVideoDevice);
-    }
+    // Either device may have been unplugged since it was chosen; the grant's revalidation then falls back
+    // to the best remaining match.
+    moveDeviceToFront(m_eligibleAudioDevices.mutableSpan(), hasPersistentID(audioDeviceUID));
+    moveDeviceToFront(m_eligibleVideoDevices.mutableSpan(), hasPersistentID(videoDeviceUID));
 #else
     UNUSED_PARAM(audioDeviceUID);
     UNUSED_PARAM(videoDeviceUID);
@@ -130,47 +118,28 @@ void UserMediaPermissionRequestProxy::allow(const String& audioDeviceUID, const 
     allow();
 }
 
-void UserMediaPermissionRequestProxy::preferDevices(const String& audioDeviceUID, const String& videoDeviceUID, unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount)
-{
 #if ENABLE(MEDIA_STREAM)
-    m_selectedAudioDeviceUID = audioDeviceUID;
-    m_selectedVideoDeviceUID = videoDeviceUID;
+void UserMediaPermissionRequestProxy::preferDevices(const DeviceUIDs& deviceUIDs, BestMatchingDeviceCounts bestMatchingCounts)
+{
+    m_selectedDeviceUIDs = deviceUIDs;
     m_deviceSelectionWasExplicit = false;
 
-    // A previous choice only wins among the devices that match this call's constraints equally
-    // well, which the eligible lists hold as a prefix. Anything after that prefix matches worse,
-    // so promoting it would result in using a device whose characteristics are not the best match
-    // for the constraints. A device that is absent entirely, having been unplugged or excluded,
-    // is simply not preferred, and in both cases the best match stays first.
-    if (!audioDeviceUID.isEmpty() && indexOfDevice(m_eligibleAudioDevices, audioDeviceUID) < bestMatchingAudioDeviceCount)
-        moveDeviceToFront(m_eligibleAudioDevices, audioDeviceUID);
-    if (!videoDeviceUID.isEmpty() && indexOfDevice(m_eligibleVideoDevices, videoDeviceUID) < bestMatchingVideoDeviceCount)
-        moveDeviceToFront(m_eligibleVideoDevices, videoDeviceUID);
-#else
-    UNUSED_PARAM(audioDeviceUID);
-    UNUSED_PARAM(videoDeviceUID);
-    UNUSED_PARAM(bestMatchingAudioDeviceCount);
-    UNUSED_PARAM(bestMatchingVideoDeviceCount);
-#endif
+    // A previous choice only wins among the best matches, which the eligible lists hold first.
+    moveDeviceToFront(m_eligibleAudioDevices.mutableSpan().first(std::min<size_t>(bestMatchingCounts.audio, m_eligibleAudioDevices.size())), hasPersistentID(deviceUIDs.audioDeviceUID));
+    moveDeviceToFront(m_eligibleVideoDevices.mutableSpan().first(std::min<size_t>(bestMatchingCounts.video, m_eligibleVideoDevices.size())), hasPersistentID(deviceUIDs.videoDeviceUID));
 }
 
-#if ENABLE(MEDIA_STREAM)
-void UserMediaPermissionRequestProxy::reapplyDeviceSelection(unsigned bestMatchingAudioDeviceCount, unsigned bestMatchingVideoDeviceCount)
+void UserMediaPermissionRequestProxy::reapplyDeviceSelection(BestMatchingDeviceCounts bestMatchingCounts)
 {
-    // A device chosen in the prompt wins outright: the lists were already filtered to devices the
-    // constraints accept, so the person looking at the preview has the final say. A device merely
-    // carried over from an earlier grant is still subject to the constraint match, exactly as it was
-    // when it was first preferred. Either may have been unplugged since, in which case the
-    // revalidated best match is the right fallback and nothing is moved.
+    // A device chosen in the prompt wins outright; one carried over from an earlier grant must still be
+    // among the best matches.
     if (!m_deviceSelectionWasExplicit) {
-        preferDevices(m_selectedAudioDeviceUID, m_selectedVideoDeviceUID, bestMatchingAudioDeviceCount, bestMatchingVideoDeviceCount);
+        preferDevices(m_selectedDeviceUIDs, bestMatchingCounts);
         return;
     }
 
-    if (!m_selectedAudioDeviceUID.isEmpty())
-        moveDeviceToFront(m_eligibleAudioDevices, m_selectedAudioDeviceUID);
-    if (!m_selectedVideoDeviceUID.isEmpty())
-        moveDeviceToFront(m_eligibleVideoDevices, m_selectedVideoDeviceUID);
+    moveDeviceToFront(m_eligibleAudioDevices.mutableSpan(), hasPersistentID(m_selectedDeviceUIDs.audioDeviceUID));
+    moveDeviceToFront(m_eligibleVideoDevices.mutableSpan(), hasPersistentID(m_selectedDeviceUIDs.videoDeviceUID));
 }
 #endif
 
@@ -180,6 +149,17 @@ void UserMediaPermissionRequestProxy::allow()
     ASSERT(manager);
     if (!manager)
         return;
+
+    manager->delegateDecisionEnded(*this);
+
+#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+    // Capture waits until the preview has released the devices, which the prompt's completion reports.
+    if (auto dismissPrompt = std::exchange(m_previewPromptDismisser, nullptr)) {
+        m_grantWhenPromptCloses = true;
+        dismissPrompt();
+        return;
+    }
+#endif
 
     manager->grantRequest(*this);
     invalidate();
@@ -191,19 +171,21 @@ void UserMediaPermissionRequestProxy::deny(UserMediaAccessDenialReason reason)
     if (!manager)
         return;
 
+    manager->delegateDecisionEnded(*this);
     manager->denyRequest(*this, reason);
     invalidate();
 }
 
 void UserMediaPermissionRequestProxy::invalidate()
 {
-    m_manager = nullptr;
+    if (RefPtr manager = std::exchange(m_manager, nullptr))
+        manager->delegateDecisionEnded(*this);
 
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
-    // Navigation, stopCapture() and clearCachedState() all reach here. Without this the prompt stays
-    // on screen over the new page with the camera still running, on a request that can no longer be
-    // granted.
+    // Navigation, stopCapture() and clearCachedState() all reach here. The prompt must not outlive the
+    // request.
     m_previewDeviceListUpdater = nullptr;
+    m_previewRestarter = nullptr;
     if (auto dismissPrompt = std::exchange(m_previewPromptDismisser, nullptr))
         dismissPrompt();
 #endif
@@ -274,11 +256,18 @@ void UserMediaPermissionRequestProxy::promptForGetDisplayMedia(UserMediaDisplayC
 void UserMediaPermissionRequestProxy::promptForGetUserMedia()
 {
 #if ENABLE(MEDIA_STREAM) && PLATFORM(COCOA)
-    showCapturePrompt({ }, [this, protectedThis = Ref { *this }](bool granted, std::optional<size_t>, String selectedAudioDeviceUID, String selectedVideoDeviceUID) {
-        if (!granted)
-            deny(UserMediaAccessDenialReason::PermissionDenied);
+    // Not PermissionDenied, which would be cached as the user's answer.
+    if (m_isShowingPrompt) {
+        deny(UserMediaAccessDenialReason::OtherFailure);
+        return;
+    }
+
+    showCapturePrompt({ }, [this, protectedThis = Ref { *this }](MediaPermissionPromptResult&& result) {
+        // Only a refusal the user made is cached; a prompt that closed or never showed is not one.
+        if (!result.granted)
+            deny(result.wasAnswered ? UserMediaAccessDenialReason::PermissionDenied : UserMediaAccessDenialReason::OtherFailure);
         else
-            allow(selectedAudioDeviceUID, selectedVideoDeviceUID);
+            allow(result.selectedAudioDeviceUID, result.selectedVideoDeviceUID);
     });
 #endif
 }
@@ -287,57 +276,87 @@ void UserMediaPermissionRequestProxy::promptForGetUserMedia()
 
 void UserMediaPermissionRequestProxy::showCapturePromptWithoutDeciding(MediaPermissionPromptCustomization&& customization, PromptResultHandler&& completionHandler)
 {
-    showCapturePrompt(WTF::move(customization), [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](bool granted, std::optional<size_t> chosenAdditionalActionIndex, String selectedAudioDeviceUID, String selectedVideoDeviceUID) mutable {
+    showCapturePrompt(WTF::move(customization), [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](MediaPermissionPromptResult&& result) mutable {
         // Recorded but not granted: the application decides, and a grant that follows has to capture
         // from the device the user picked here rather than element 0 of the eligible lists.
-        if (granted)
-            applyDeviceSelection(selectedAudioDeviceUID, selectedVideoDeviceUID);
+        if (result.granted)
+            applyDeviceSelection(result.selectedAudioDeviceUID, result.selectedVideoDeviceUID);
 
-        completionHandler(granted, chosenAdditionalActionIndex, WTF::move(selectedAudioDeviceUID), WTF::move(selectedVideoDeviceUID));
+        completionHandler(WTF::move(result));
     });
 }
 
 void UserMediaPermissionRequestProxy::showCapturePrompt(MediaPermissionPromptCustomization&& customization, PromptResultHandler&& completionHandler)
 {
-    RefPtr manager = m_manager.get();
-    ASSERT(manager);
+    RefPtr manager = m_manager;
     if (!manager || !manager->page())
-        return completionHandler(false, std::nullopt, { }, { });
+        return completionHandler({ });
 
     MediaPermissionReason reason = MediaPermissionReason::Camera;
-    if (requiresAudioCapture())
+    if (m_kind == Kind::SpeechRecognition)
+        reason = MediaPermissionReason::SpeechRecognition;
+    else if (requiresAudioCapture())
         reason = requiresVideoCapture() ? MediaPermissionReason::CameraAndMicrophone : MediaPermissionReason::Microphone;
 
     Ref page = *manager->page();
 
-    bool canPreview = requiresVideoCapture() || requiresAudioCapture();
-    if (canPreview && protect(page->preferences())->captureDevicePreviewInPromptEnabled()) {
-        auto handles = alertForPermissionWithCapturePreview(page, {
+    // A second prompt would take over the first one's handles, which the first then clears on finishing.
+    if (m_isShowingPrompt) {
+        RELEASE_LOG_ERROR(WebRTC, "UserMediaPermissionRequestProxy::showCapturePrompt: a prompt is already showing for this request");
+        return completionHandler({ });
+    }
+    m_isShowingPrompt = true;
+
+    bool showsPreview = protect(page->preferences())->captureDevicePreviewInPromptEnabled();
+    bool isAnsweredByTest = !!page->mediaPermissionPromptHandlerForTesting();
+    // Otherwise device changes only reach the UI process once a page listens for devicechange, and the
+    // device menus would keep offering an unplugged device.
+    if (showsPreview)
+        UserMediaProcessManager::singleton().beginMonitoringCaptureDevices();
+    if (showsPreview || isAnsweredByTest) {
+        CapturePreviewPromptRequest request {
             .reason = reason,
             .origin = topLevelDocumentSecurityOrigin().data(),
             .eligibleVideoDevices = m_eligibleVideoDevices,
             .eligibleAudioDevices = m_eligibleAudioDevices,
             .customization = WTF::move(customization),
-        }, [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](CapturePreviewPromptResult&& result) mutable {
+        };
+        CompletionHandler<void(MediaPermissionPromptResult&&)> promptCompletionHandler = [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](MediaPermissionPromptResult&& result) mutable {
+            m_isShowingPrompt = false;
             m_previewDeviceListUpdater = nullptr;
             m_previewPromptDismisser = nullptr;
-            completionHandler(result.granted, result.chosenAdditionalActionIndex, WTF::move(result.selectedAudioDeviceUID), WTF::move(result.selectedVideoDeviceUID));
-        });
+            m_previewRestarter = nullptr;
+            completionHandler(WTF::move(result));
+
+            if (std::exchange(m_grantWhenPromptCloses, false)) {
+                if (RefPtr manager = m_manager)
+                    manager->grantRequest(*this);
+                invalidate();
+            }
+        };
+        auto handles = isAnsweredByTest ? alertForPermissionForTesting(page, WTF::move(request), showsPreview, WTF::move(promptCompletionHandler)) : alertForPermissionWithCapturePreview(page, WTF::move(request), WTF::move(promptCompletionHandler));
+        if (!m_isShowingPrompt)
+            return;
         m_previewDeviceListUpdater = WTF::move(handles.deviceListUpdater);
         m_previewPromptDismisser = WTF::move(handles.promptDismisser);
+        m_previewRestarter = WTF::move(handles.previewRestarter);
         return;
     }
 
     // No preview means no device menus, so a grant from here uses whatever the eligible lists already
     // order first.
-    alertForPermission(page, { .reason = reason, .origin = topLevelDocumentSecurityOrigin().data(), .customization = WTF::move(customization) }, [completionHandler = WTF::move(completionHandler)](PermissionPromptResult&& result) mutable {
-        completionHandler(result.granted, result.chosenAdditionalActionIndex, { }, { });
+    alertForPermission(page, { .reason = reason, .origin = topLevelDocumentSecurityOrigin().data(), .customization = WTF::move(customization) }, [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](MediaPermissionPromptResult&& result) mutable {
+        m_isShowingPrompt = false;
+        completionHandler(WTF::move(result));
     });
 }
 
-#endif // PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+void UserMediaPermissionRequestProxy::gpuProcessExited()
+{
+    if (m_previewRestarter)
+        m_previewRestarter();
+}
 
-#if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
 void UserMediaPermissionRequestProxy::devicesChanged()
 {
     if (!m_previewDeviceListUpdater)
@@ -351,8 +370,7 @@ void UserMediaPermissionRequestProxy::devicesChanged()
             return;
 
         if (!validDevices) {
-            protectedThis->m_eligibleVideoDevices = { };
-            protectedThis->m_eligibleAudioDevices = { };
+            // The application may still grant, so the request keeps the devices it was made with.
             protectedThis->m_previewDeviceListUpdater({ }, { });
             return;
         }

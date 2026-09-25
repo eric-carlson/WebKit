@@ -86,8 +86,9 @@ public:
     static void forEach(NOESCAPE const WTF::Function<void(UserMediaPermissionRequestManagerProxy&)>&);
 #if HAVE(AVCAPTUREDEVICEROTATIONCOORDINATOR)
     bool isMonitoringCaptureDeviceRotation(const String&);
-    void startMonitoringCaptureDeviceRotation(const String&);
-    void stopMonitoringCaptureDeviceRotation(const String&);
+    void startMonitoringCaptureDeviceRotation(const String&, bool forCapturePreview);
+    void stopMonitoringCaptureDeviceRotation(const String&, bool forCapturePreview);
+    void stopMonitoringCaptureDeviceRotationForCapturePreview();
     void rotationAngleForCaptureDeviceChanged(const String&, WebCore::VideoFrameRotation);
 #endif // HAVE(AVCAPTUREDEVICEROTATIONCOORDINATOR)
 #endif
@@ -115,6 +116,7 @@ public:
     void captureDevicesChanged();
 
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
+    void gpuProcessExited();
     void showMediaCapturePermissionPrompt(MediaPermissionPromptCustomization&&, UserMediaPermissionRequestProxy::PromptResultHandler&&);
 #endif
 
@@ -133,6 +135,9 @@ public:
     bool hasPendingCapture() const { return m_hasPendingCapture; }
 
     void checkUserMediaPermissionForSpeechRecognition(WebCore::FrameIdentifier mainFrameIdentifier, FrameInfoData&&, const WebCore::SecurityOrigin&, const WebCore::SecurityOrigin&, const WebCore::CaptureDevice&, CompletionHandler<void(bool)>&&);
+
+    void askDelegateToDecide(UserMediaPermissionRequestProxy&);
+    void delegateDecisionEnded(UserMediaPermissionRequestProxy&);
 
     struct DeniedRequest {
         WebCore::FrameIdentifier mainFrameID;
@@ -172,12 +177,7 @@ private:
     bool wasRequestDenied(const UserMediaPermissionRequestProxy&, bool needsAudio, bool needsVideo, bool needsScreenCapture);
 
 #if ENABLE(MEDIA_STREAM)
-    struct PreviouslySelectedDeviceUIDs {
-        String audioDeviceUID;
-        String videoDeviceUID;
-    };
-    PreviouslySelectedDeviceUIDs previouslySelectedDeviceUIDs(const UserMediaPermissionRequestProxy&) const;
-    PreviouslySelectedDeviceUIDs previouslySelectedDeviceUIDs(const WebCore::SecurityOrigin& userMediaDocumentOrigin, const WebCore::SecurityOrigin& topLevelDocumentOrigin, WebCore::FrameIdentifier) const;
+    UserMediaPermissionRequestProxy::DeviceUIDs previouslySelectedDeviceUIDs(const WebCore::SecurityOrigin& userMediaDocumentOrigin, const WebCore::SecurityOrigin& topLevelDocumentOrigin, WebCore::FrameIdentifier) const;
 #endif
 
     void getUserMediaPermissionInfo(WebCore::FrameIdentifier, Ref<WebCore::SecurityOrigin>&& userMediaDocumentOrigin, Ref<WebCore::SecurityOrigin>&& topLevelDocumentOrigin, CompletionHandler<void(WebCore::PermissionState, WebCore::PermissionState)>&&);
@@ -208,6 +208,7 @@ private:
 
     void processNextUserMediaRequestIfNeeded();
     void decidePolicyForUserMediaPermissionRequest();
+    void askDelegateAboutNextWaitingRequest();
     void updateStoredRequests(UserMediaPermissionRequestProxy&);
 
     String ephemeralDeviceHashSaltForFrame(WebCore::FrameIdentifier);
@@ -216,6 +217,8 @@ private:
 
     RefPtr<UserMediaPermissionRequestProxy> m_currentUserMediaRequest;
     Deque<Ref<UserMediaPermissionRequestProxy>> m_pendingUserMediaRequests;
+    RefPtr<UserMediaPermissionRequestProxy> m_requestAwaitingDelegateDecision;
+    Deque<Ref<UserMediaPermissionRequestProxy>> m_requestsWaitingForDelegate;
     HashSet<MediaDevicePermissionRequestIdentifier> m_pendingDeviceRequests;
 
     WeakPtr<WebPageProxy> m_page;

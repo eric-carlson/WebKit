@@ -1268,10 +1268,18 @@ void GPUConnectionToWebProcess::setOrientationForMediaCapture(IntDegrees orienta
 #endif
 }
 
+void GPUConnectionToWebProcess::reapplyCaptureEnvironment()
+{
+#if PLATFORM(COCOA)
+    if (RefPtr userMediaCaptureManagerProxy = m_userMediaCaptureManagerProxy)
+        userMediaCaptureManagerProxy->reapplyCaptureEnvironment();
+#endif
+}
+
 void GPUConnectionToWebProcess::startMonitoringCaptureDeviceRotation(WebCore::PageIdentifier pageIdentifier, const String& persistentId)
 {
 #if PLATFORM(COCOA)
-    protect(gpuProcess().parentProcessConnection())->send(Messages::GPUProcessProxy::StartMonitoringCaptureDeviceRotation(pageIdentifier, persistentId), 0);
+    protect(gpuProcess().parentProcessConnection())->send(Messages::GPUProcessProxy::StartMonitoringCaptureDeviceRotation(pageIdentifier, persistentId, false), 0);
 #else
     UNUSED_PARAM(pageIdentifier);
     UNUSED_PARAM(persistentId);
@@ -1281,7 +1289,7 @@ void GPUConnectionToWebProcess::startMonitoringCaptureDeviceRotation(WebCore::Pa
 void GPUConnectionToWebProcess::stopMonitoringCaptureDeviceRotation(WebCore::PageIdentifier pageIdentifier, const String& persistentId)
 {
 #if PLATFORM(COCOA)
-    protect(gpuProcess().parentProcessConnection())->send(Messages::GPUProcessProxy::StopMonitoringCaptureDeviceRotation(pageIdentifier, persistentId), 0);
+    protect(gpuProcess().parentProcessConnection())->send(Messages::GPUProcessProxy::StopMonitoringCaptureDeviceRotation(pageIdentifier, persistentId, false), 0);
 #else
     UNUSED_PARAM(pageIdentifier);
     UNUSED_PARAM(persistentId);

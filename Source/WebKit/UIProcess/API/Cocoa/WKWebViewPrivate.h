@@ -135,7 +135,6 @@ typedef NS_ENUM(NSInteger, _WKImmediateActionType) {
 @class _WKHitTestResult;
 @class _WKInspector;
 @class _WKJSHandle;
-@class _WKMediaCapturePermissionAction;
 @class _WKMediaCapturePermissionPromptConfiguration;
 @class _WKMediaCapturePermissionPromptResult;
 @class _WKRemoteObjectRegistry;
@@ -334,8 +333,9 @@ for this property.
 - (void)_showSafeBrowsingWarningWithURL:(NSURL *)url title:(NSString *)title warning:(NSString *)warning details:(NSAttributedString *)details completionHandler:(void(^)(BOOL))completionHandler WK_API_DEPRECATED_WITH_REPLACEMENT("-_showSafeBrowsingWarningWithURL:title:warning:detailsWithLinks:completionHandler:", macos(10.14.4, 10.15.4), ios(12.2, 13.2));
 - (void)_showSafeBrowsingWarningWithURL:(NSURL *)url title:(NSString *)title warning:(NSString *)warning detailsWithLinks:(NSAttributedString *)details completionHandler:(void(^)(BOOL, NSURL *))completionHandler WK_API_AVAILABLE(macos(10.15.4), ios(13.2));
 
-/*! @abstract Shows WebKit's capture permission prompt for the request currently being decided, with
- the device menus and the live preview WebKit renders, and reports what the user did.
+/*! @abstract Shows WebKit's capture permission prompt for the current getUserMedia request and
+ reports what the user did. When the capture preview preference is on, the prompt also has device
+ menus and a live preview.
  @discussion Call this only from within
  -webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:, then answer
  that decision handler with WKPermissionDecisionGrant or WKPermissionDecisionDeny. The outcome is
@@ -343,7 +343,8 @@ for this property.
  WKPermissionDecisionGrant captures from the device the user chose in the prompt.
 
  configuration may be nil for WebKit's unmodified prompt. If no capture request is being decided the
- completion handler is called with a denied outcome, because there is nothing for the user to answer.
+ completion handler is called synchronously, with a dismissed outcome, because there is nothing for the
+ user to answer.
 
  An action that denies does not make the denial persistent. WebKit forgets a denial when the main frame
  loads a new document, and ignores it for a request made in response to a user gesture, so an

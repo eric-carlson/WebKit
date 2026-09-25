@@ -38,20 +38,16 @@
 #include <wtf/CompletionHandler.h>
 #include <wtf/Function.h>
 #include <wtf/Ref.h>
-#include <wtf/RefCounted.h>
 #include <wtf/TZoneMalloc.h>
+#include <wtf/ThreadSafeRefCounted.h>
 #include <wtf/text/WTFString.h>
 
 namespace WebKit {
 
 class LayerHostingContext;
 
-// Drives a capture preview for the getUserMedia permission prompt, on behalf of the UI
-// process. Unlike UserMediaCaptureManagerProxy this keeps the source local to the GPU
-// process: the video is rendered into a layer hosted by the UI process and the audio
-// level is computed here, so there is no client process to marshal a source out to.
 class CapturePreviewManager
-    : public RefCounted<CapturePreviewManager>
+    : public ThreadSafeRefCounted<CapturePreviewManager, WTF::DestructionThread::MainRunLoop>
     , public WebCore::RealtimeMediaSource::VideoFrameObserver
     , public WebCore::RealtimeMediaSource::AudioSampleObserver
     , public WebCore::SampleBufferDisplayLayerClient
@@ -60,8 +56,8 @@ class CapturePreviewManager
     WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(CapturePreviewManager);
     OVERRIDE_ABSTRACT_CAN_MAKE_CHECKEDPTR(CanMakeCheckedPtr);
 public:
-    void ref() const final { RefCounted::ref(); }
-    void deref() const final { RefCounted::deref(); }
+    void ref() const final { ThreadSafeRefCounted::ref(); }
+    void deref() const final { ThreadSafeRefCounted::deref(); }
 
     static Ref<CapturePreviewManager> create() { return adoptRef(*new CapturePreviewManager); }
     ~CapturePreviewManager();
@@ -114,6 +110,8 @@ private:
     // Remembered so that changing one device does not tear down the other.
     String m_videoDeviceID;
     String m_audioDeviceID;
+    std::optional<WebCore::PageIdentifier> m_videoPageIdentifier;
+    WebCore::IntSize m_previewSize;
 
     WebCore::OrientationNotifier m_orientationNotifier { 0 };
     Function<void(float)> m_audioLevelHandler;

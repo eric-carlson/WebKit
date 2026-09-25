@@ -79,12 +79,7 @@ struct PermissionPromptRequest {
     MediaPermissionPromptCustomization customization;
 };
 
-struct PermissionPromptResult {
-    bool granted { false };
-    std::optional<size_t> chosenAdditionalActionIndex;
-};
-
-void alertForPermission(WebPageProxy&, PermissionPromptRequest&&, CompletionHandler<void(PermissionPromptResult&&)>&&);
+void alertForPermission(WebPageProxy&, PermissionPromptRequest&&, CompletionHandler<void(MediaPermissionPromptResult&&)>&&);
 void alertForPermission(WebPageProxy&, MediaPermissionReason, const WebCore::SecurityOriginData&, CompletionHandler<void(bool)>&&);
 
 void requestAVCaptureAccessForType(MediaPermissionType, CompletionHandler<void(bool authorized)>&&);
@@ -94,6 +89,7 @@ MediaPermissionResult checkAVCaptureAccessForType(MediaPermissionType);
 #if PLATFORM(COCOA) && ENABLE(MEDIA_STREAM)
 using CapturePreviewDeviceListUpdater = Function<void(Vector<WebCore::CaptureDevice>&& videoDevices, Vector<WebCore::CaptureDevice>&& audioDevices)>;
 using CapturePreviewPromptDismisser = Function<void()>;
+using CapturePreviewRestarter = Function<void()>;
 
 struct CapturePreviewPromptRequest {
     MediaPermissionReason reason;
@@ -103,19 +99,14 @@ struct CapturePreviewPromptRequest {
     MediaPermissionPromptCustomization customization;
 };
 
-struct CapturePreviewPromptResult {
-    bool granted { false };
-    String selectedAudioDeviceUID;
-    String selectedVideoDeviceUID;
-    std::optional<size_t> chosenAdditionalActionIndex;
-};
-
 struct CapturePreviewPromptHandles {
     CapturePreviewDeviceListUpdater deviceListUpdater;
     CapturePreviewPromptDismisser promptDismisser;
+    CapturePreviewRestarter previewRestarter;
 };
 
-CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy&, CapturePreviewPromptRequest&&, CompletionHandler<void(CapturePreviewPromptResult&&)>&&);
+CapturePreviewPromptHandles alertForPermissionWithCapturePreview(WebPageProxy&, CapturePreviewPromptRequest&&, CompletionHandler<void(MediaPermissionPromptResult&&)>&&);
+CapturePreviewPromptHandles alertForPermissionForTesting(WebPageProxy&, CapturePreviewPromptRequest&&, bool showsPreview, CompletionHandler<void(MediaPermissionPromptResult&&)>&&);
 #endif
 
 #if HAVE(SPEECHRECOGNIZER)

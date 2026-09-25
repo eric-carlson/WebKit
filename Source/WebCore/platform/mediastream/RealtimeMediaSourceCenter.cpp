@@ -327,8 +327,7 @@ std::expected<RealtimeMediaSourceCenter::ValidDevices, MediaConstraintType> Real
         }
     } sortBasedOnFitnessScore;
 
-    // Counts the devices tied for the best match. The list is sorted best first, so they are a
-    // prefix and the scan can stop at the first device that scores worse. Must not be called empty.
+    // Sorted best first, so the ties are a prefix.
     auto bestMatchingDeviceCount = [](const Vector<DeviceInfo>& deviceInfo) {
         ASSERT(!deviceInfo.isEmpty());
         double bestFitnessScore = deviceInfo[0].fitnessScore;

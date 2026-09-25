@@ -94,7 +94,7 @@ void RemoteAudioSessionProxyManager::updateCategory()
     // A capture preview belongs to no web process, so it votes here rather than through a proxy.
     // Without a vote a preview started while nothing else is capturing finds the session in a
     // playback category, and on iOS BaseAudioCaptureUnit then refuses to start the unit.
-    if (m_capturePreviewActive) {
+    if (isCapturePreviewActive()) {
         categoryCounts.add(AudioSession::CategoryType::PlayAndRecord);
         modeCounts.add(AudioSession::Mode::VideoChat);
     }
@@ -182,6 +182,7 @@ bool RemoteAudioSessionProxyManager::hasOtherActiveProxyThan(RemoteAudioSessionP
     return false;
 }
 
+#if PLATFORM(IOS_FAMILY)
 bool RemoteAudioSessionProxyManager::hasActiveProxy()
 {
     for (auto& proxy : m_proxies) {
@@ -190,6 +191,7 @@ bool RemoteAudioSessionProxyManager::hasActiveProxy()
     }
     return false;
 }
+#endif
 
 bool RemoteAudioSessionProxyManager::hasActiveNotInterruptedProxy()
 {
@@ -237,7 +239,7 @@ Ref<AudioSession::SetActivePromise> RemoteAudioSessionProxyManager::tryToSetActi
     ASSERT(m_proxies.contains(proxy));
 
     if (!active) {
-        if (hasOtherActiveProxyThan(proxy)) {
+        if (isCapturePreviewActive() || hasOtherActiveProxyThan(proxy)) {
             // This proxy wants to de-activate, but other proxies are still
             // active. No-op, and return deactivation was sucessful.
             return AudioSession::SetActivePromise::createAndResolve();
@@ -285,37 +287,32 @@ Ref<AudioSession::SetActivePromise> RemoteAudioSessionProxyManager::tryToSetActi
     return AudioSession::SetActivePromise::createAndResolve();
 }
 
+#if PLATFORM(IOS_FAMILY)
 void RemoteAudioSessionProxyManager::beginCapturePreview(CompletionHandler<void()>&& completionHandler)
 {
-    // A second microphone selection arrives with the session already configured, so it only has to
-    // wait for whatever the first one started.
-    if (m_capturePreviewActive)
+    if (m_capturePreviewActive) {
+        // A later microphone selection still has to wait while the first activation is in flight: a
+        // unit started before it settles reads the old category and stays silent.
+        if (!m_capturePreviewActivationHandlers.isEmpty()) {
+            m_capturePreviewActivationHandlers.append(WTF::move(completionHandler));
+            return;
+        }
         return completionHandler();
+    }
 
     m_capturePreviewActive = true;
     updateCategory();
 
-#if PLATFORM(IOS_FAMILY)
-    // A preview captures on behalf of the application, and activation requires some process to have
-    // been named as presenting. With no proxy to take one from, name the UI process.
-    if (RefPtr parentProcessConnection = m_gpuProcess->parentProcessConnection())
-        protect(MediaSessionHelper::sharedHelper())->providePresentingApplicationPID(parentProcessConnection->remoteProcessID());
-
-    // A preview records, so it cannot mix: interrupt the pages that cannot mix with it, as a web
-    // process becoming active would.
-    for (Ref proxy : m_proxies) {
-        if (proxy->isActive() && !categoryCanMixWithOthers(proxy->category()))
-            proxy->beginInterruption();
-    }
-#endif
-
-    // Activated even when a page already holds the session, because the caller needs one thing to
-    // wait on: a capture unit reads the category back from the audio session as it starts, and gets
-    // the old one if it starts in the same turn as the category was set.
-    AudioSession::singleton().tryToSetActive(true)->whenSettled(RunLoop::mainSingleton(), [completionHandler = WTF::move(completionHandler)](auto&& result) mutable {
+    m_capturePreviewActivationHandlers.append(WTF::move(completionHandler));
+    unsigned activation = ++m_capturePreviewActivationCount;
+    AudioSession::singleton().tryToSetActive(true)->whenSettled(RunLoop::mainSingleton(), [protectedThis = Ref { *this }, activation](auto&& result) {
         if (!result)
             RELEASE_LOG_ERROR(WebRTC, "RemoteAudioSessionProxyManager::beginCapturePreview unable to activate the audio session for a capture preview");
-        completionHandler();
+        // A preview ended and begun again while this was in flight has its own activation to wait for.
+        if (activation != protectedThis->m_capturePreviewActivationCount)
+            return;
+        for (auto& handler : std::exchange(protectedThis->m_capturePreviewActivationHandlers, { }))
+            handler();
     });
 }
 
@@ -330,6 +327,7 @@ void RemoteAudioSessionProxyManager::endCapturePreview()
     if (!hasActiveProxy())
         AudioSession::singleton().tryToSetActive(false)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
 }
+#endif
 
 void RemoteAudioSessionProxyManager::updatePresentingProcesses()
 {
